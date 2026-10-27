@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePrRef, signImages } from "../src/github";
+import { parsePrRef, repoFromRemote, signImages } from "../src/github";
 
 describe("signImages", () => {
   const html =
@@ -36,5 +36,20 @@ describe("PR references", () => {
       number: 42,
     });
     expect(() => parsePrRef("#42", null)).toThrow(/needs a repository/);
+  });
+
+  it("reads owner/repo from SSH and HTTPS remotes", () => {
+    expect(repoFromRemote("git@github.com:acme/app.git")).toBe("acme/app");
+    expect(repoFromRemote("ssh://git@github.com/acme/app.git")).toBe(
+      "acme/app",
+    );
+    expect(repoFromRemote("https://github.com/acme/app")).toBe("acme/app");
+    expect(repoFromRemote("https://github.com/acme/app.git/")).toBe("acme/app");
+  });
+
+  it("ignores remotes that are not on GitHub", () => {
+    expect(repoFromRemote("https://gitlab.com/acme/app.git")).toBeNull();
+    expect(repoFromRemote("")).toBeNull();
+    expect(repoFromRemote(null)).toBeNull();
   });
 });
