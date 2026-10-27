@@ -6,11 +6,14 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { EmptyStatePanel } from "@/components/ui/empty-state";
 import { Icon } from "@/components/ui/icon";
-import { describeTarget, type WalkthroughSummary } from "../src/model";
+import {
+  WALKTHROUGH_CHANGED,
+  describeTarget,
+  type WalkthroughSummary,
+} from "../src/model";
 import type { InboxEntry } from "../server";
 import { Hint } from "./Hint";
 import {
-  WALKTHROUGH_CHANGED,
   errorMessage,
   pendingOpens,
   relativeTime,

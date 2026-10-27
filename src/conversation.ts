@@ -1,7 +1,17 @@
 // The message a reviewer's private question becomes in the agent's thread.
 // Pure, so the exact wording is unit-tested.
 import { commentableLines, type DiffFile } from "./diff";
-import type { Discussion, DraftComment, Walkthrough } from "./model";
+import {
+  allStops,
+  isMultiLine,
+  lineSpan,
+  type Discussion,
+  type DraftComment,
+  type Walkthrough,
+} from "./model";
+
+/** What a question prompt needs to know about its conversation. */
+type ConversationPlace = Pick<Discussion, "stopId" | "anchor" | "messages">;
 
 /** Wraps the question so its answer can be found in the thread's events. */
 export function questionMarker(messageId: string): string {
@@ -14,10 +24,9 @@ export function questionMarker(messageId: string): string {
  */
 export function anchorExcerpt(
   files: readonly DiffFile[],
-  discussion: Discussion,
+  anchor: Discussion["anchor"],
   context = 3,
 ): string | null {
-  const anchor = discussion.anchor;
   if (anchor === null) return null;
   const hunk = files
     .find((file) => file.path === anchor.path)
@@ -43,43 +52,39 @@ export function anchorExcerpt(
   return out.length === 0 ? null : out.join("\n");
 }
 
-function describeAnchor(discussion: Discussion): string {
-  const anchor = discussion.anchor;
+function describeAnchor(anchor: Discussion["anchor"]): string {
   if (anchor === null) return "this stop as a whole";
-  const lines =
-    anchor.startLine !== null && anchor.startLine !== anchor.line
-      ? `lines ${anchor.startLine}-${anchor.line}`
-      : `line ${anchor.line}`;
+  const lines = `${isMultiLine(anchor) ? "lines" : "line"} ${lineSpan(anchor)}`;
   return `\`${anchor.path}\` ${lines}${anchor.side === "LEFT" ? " of the old file (removed lines)" : ""}`;
 }
 
 export function buildQuestionPrompt(input: {
   walkthrough: Walkthrough;
-  discussion: Discussion;
+  discussion: ConversationPlace;
   comment: DraftComment | null;
   messageId: string;
 }): { visible: string; context: string } {
   const { walkthrough, discussion, comment, messageId } = input;
-  const stop = walkthrough.chapters
-    .flatMap((chapter) => chapter.stops)
-    .find((s) => s.id === discussion.stopId);
+  const stop = allStops(walkthrough.chapters).find(
+    (s) => s.id === discussion.stopId,
+  );
   const question = discussion.messages.find(
     (message) => message.id === messageId,
   );
   if (question === undefined)
-    throw new Error(`No message ${messageId} in ${discussion.id}`);
+    throw new Error(`No message ${messageId} in the conversation`);
   const earlier = discussion.messages.slice(
     0,
     discussion.messages.indexOf(question),
   );
 
-  const visible = `Walkthrough question about ${describeAnchor(discussion)}: ${question.body}`;
+  const visible = `Walkthrough question about ${describeAnchor(discussion.anchor)}: ${question.body}`;
   const out = [
     `<${questionMarker(messageId)}>`,
     `The reviewer asked the question above privately in the walkthrough "${walkthrough.title}" (${walkthrough.id}), ` +
       `at the stop "${stop?.title ?? discussion.stopId}".`,
   ];
-  const excerpt = anchorExcerpt(walkthrough.files, discussion);
+  const excerpt = anchorExcerpt(walkthrough.files, discussion.anchor);
   if (excerpt !== null) out.push("", "```diff", excerpt, "```");
   if (comment !== null) {
     out.push(
@@ -124,12 +129,8 @@ export function buildSummaryPrompt(input: {
       : "The inline comments the reviewer kept, as they will post:",
   ];
   kept.forEach((comment, index) => {
-    const lines =
-      comment.startLine !== null && comment.startLine !== comment.line
-        ? `${comment.startLine}-${comment.line}`
-        : `${comment.line}`;
     out.push(
-      `${index + 1}. ${comment.path}:${lines}`,
+      `${index + 1}. ${comment.path}:${lineSpan(comment)}`,
       ...comment.body
         .trim()
         .split("\n")

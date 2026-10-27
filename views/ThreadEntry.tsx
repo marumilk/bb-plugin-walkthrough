@@ -9,15 +9,16 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { Hint } from "./Hint";
 import {
+  WALKTHROUGH_CHANGED,
+  WALKTHROUGH_READY,
+  allStops,
   countComments,
   describeTarget,
   type WalkthroughSummary,
 } from "../src/model";
+import { Hint } from "./Hint";
 import {
-  WALKTHROUGH_CHANGED,
-  WALKTHROUGH_READY,
   WALKTHROUGH_TAB,
   pendingOpens,
   pluralize,
@@ -123,7 +124,7 @@ export function WalkthroughDirective({
         </p>
         <p className="truncate text-xs text-muted-foreground">
           {walkthrough && counts
-            ? `${describeTarget(walkthrough.target)} · ${walkthrough.chapters.reduce((n, c) => n + c.stops.length, 0)} stops · ` +
+            ? `${describeTarget(walkthrough.target)} · ${allStops(walkthrough.chapters).length} stops · ` +
               (walkthrough.status === "submitted"
                 ? "posted"
                 : walkthrough.status === "sent"

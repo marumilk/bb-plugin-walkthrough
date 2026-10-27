@@ -1,7 +1,18 @@
-// Records shared by the server and the app. The app imports these as types
-// only; nothing here may pull server code into the frontend bundle.
+// Records and small helpers shared by the server and the app. Everything here
+// is pure and imports types only, so the app can use it without pulling
+// server code into the frontend bundle.
 import type { DiffFile, Side } from "./diff";
-import type { ResolvedChapter, Severity, Verdict } from "./document";
+import type {
+  ResolvedChapter,
+  ResolvedStop,
+  Severity,
+  Verdict,
+} from "./document";
+
+/** Realtime channel: `{ id, threadId }` after any change to a walkthrough. */
+export const WALKTHROUGH_CHANGED = "walkthrough-changed";
+/** Realtime channel: `{ id, threadId }` when an agent submits a new walkthrough. */
+export const WALKTHROUGH_READY = "walkthrough-ready";
 
 export type LocalDiff =
   | { type: "uncommitted" }
@@ -108,6 +119,27 @@ export function countComments(
   const counts: CommentCounts = { pending: 0, kept: 0, discarded: 0 };
   for (const comment of comments) counts[comment.status] += 1;
   return counts;
+}
+
+export function allStops(chapters: readonly ResolvedChapter[]): ResolvedStop[] {
+  return chapters.flatMap((chapter) => chapter.stops);
+}
+
+/** A comment's or conversation's lines: one line, or `startLine`..`line`. */
+export interface LineRange {
+  line: number;
+  startLine: number | null;
+}
+
+export function isMultiLine(range: LineRange): boolean {
+  return range.startLine !== null && range.startLine !== range.line;
+}
+
+/** "13-15" for a range, "15" for a single line. */
+export function lineSpan(range: LineRange, dash = "-"): string {
+  return isMultiLine(range)
+    ? `${range.startLine}${dash}${range.line}`
+    : `${range.line}`;
 }
 
 export function describeTarget(target: Target): string {

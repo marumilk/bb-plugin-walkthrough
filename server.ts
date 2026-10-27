@@ -16,7 +16,13 @@ import {
   type BbPluginApi,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { findHunkForRange, hunkStats, type DiffFile } from "./src/diff";
+import {
+  findHunkForRange,
+  hunkStats,
+  type DiffFile,
+  type DiffHunk,
+  type Side,
+} from "./src/diff";
 import {
   documentSchema,
   formatIssues,
@@ -41,11 +47,17 @@ import {
 } from "./src/agent";
 import { buildQuestionPrompt, buildSummaryPrompt } from "./src/conversation";
 import {
+  WALKTHROUGH_CHANGED,
+  WALKTHROUGH_READY,
+  allStops,
   countComments,
   describeTarget,
+  isMultiLine,
   viewedKey,
   type Discussion,
+  type DiscussionMessage,
   type DraftComment,
+  type LineRange,
   type Walkthrough,
   type WalkthroughSummary,
 } from "./src/model";
@@ -58,11 +70,6 @@ import {
   summaryBasis,
 } from "./src/submission";
 import { snapshotTarget, threadContext } from "./src/targets";
-
-/** Realtime channel: `{ id, threadId }` after any change to a walkthrough. */
-export const WALKTHROUGH_CHANGED = "walkthrough-changed";
-/** Realtime channel: `{ id, threadId }` when an agent submits a new walkthrough. */
-export const WALKTHROUGH_READY = "walkthrough-ready";
 
 export interface InboxEntry {
   repo: string;
@@ -245,6 +252,23 @@ const DEFAULT_REVIEW_INSTRUCTIONS =
   "Review it with the /code-review skill if you have it (without --comment or --fix), " +
   "then turn the findings that hold up into draft comments.";
 
+/** How many walkthroughs the Reviews page and `bb walkthrough list` show. */
+const RECENT_LIMIT = 50;
+
+const STILL_ANSWERING = "The agent is still answering the last question.";
+const ALREADY_REWRITING = "The agent is already rewriting the summary.";
+const THREAD_UNREACHABLE = "Could not reach the agent's thread.";
+
+/** A question sent to the agent's thread whose answer is still to come. */
+type PendingQuestion = {
+  messageId: string;
+  afterSeq: string;
+  visible?: string;
+};
+
+type Outcome =
+  { answer: string; error: null } | { answer: null; error: string };
+
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     reviewInstructions: {
@@ -277,80 +301,83 @@ export default async function plugin(bb: BbPluginApi) {
     return walkthrough;
   };
 
-  // ── Conversations with the agent ──────────────────────────────────────
+  // ── Answers from the agent ────────────────────────────────────────────
   const conversations = new AbortController();
   bb.onDispose(() => conversations.abort());
 
-  /** Waits for the agent's answer and records it, or the failure. */
-  const collectAnswer = (walkthrough: Walkthrough, discussion: Discussion) => {
-    const waiting = discussion.waiting;
-    if (waiting === null) return;
-    void awaitAnswer(bb, {
-      threadId: walkthrough.threadId,
-      messageId: waiting.messageId,
-      afterSeq: waiting.afterSeq,
-      ...(waiting.visible !== undefined ? { visible: waiting.visible } : {}),
-      signal: conversations.signal,
-    }).then(
-      (answer) => {
-        store.updateDiscussion(walkthrough.id, discussion.id, (draft) => {
-          draft.messages.push({
-            id: newMessageId(),
-            author: "agent",
-            body: answer,
-            at: Date.now(),
+  /**
+   * Waits for the agent's reply to a question already in its thread, then
+   * hands `record` the answer or the failure. Nothing is recorded when the
+   * walkthrough or conversation was deleted while the agent answered.
+   */
+  const collect = (
+    threadId: string,
+    question: PendingQuestion,
+    label: string,
+    record: (outcome: Outcome) => void,
+  ) => {
+    awaitAnswer(bb, { threadId, ...question, signal: conversations.signal })
+      .then(
+        (answer) => record({ answer, error: null }),
+        (error: unknown) => {
+          // A reload aborts the wait; the next load resumes it from the cursor.
+          if (conversations.signal.aborted) return;
+          bb.log.warn(`${label}: ${String(error)}`);
+          record({
+            answer: null,
+            error:
+              error instanceof AgentAnswerError
+                ? error.message
+                : "Could not get the agent's reply.",
           });
-          draft.waiting = null;
-          draft.error = null;
-        });
-        changed(walkthrough);
-      },
-      (error: unknown) => {
-        // A reload aborts the wait; the next load resumes it from the cursor.
-        if (conversations.signal.aborted) return;
-        bb.log.warn(`conversation ${discussion.id}: ${String(error)}`);
+        },
+      )
+      .catch((error: unknown) => {
+        if (!(error instanceof NotFoundError))
+          bb.log.warn(`${label}: ${String(error)}`);
+      });
+  };
+
+  const collectAnswer = (walkthrough: Walkthrough, discussion: Discussion) => {
+    if (discussion.waiting === null) return;
+    collect(
+      walkthrough.threadId,
+      discussion.waiting,
+      `conversation ${discussion.id}`,
+      ({ answer, error }) => {
         store.updateDiscussion(walkthrough.id, discussion.id, (draft) => {
+          if (answer !== null) {
+            draft.messages.push({
+              id: newMessageId(),
+              author: "agent",
+              body: answer,
+              at: Date.now(),
+            });
+          }
           draft.waiting = null;
-          draft.error =
-            error instanceof AgentAnswerError
-              ? error.message
-              : "Could not get the agent's answer.";
+          draft.error = error;
         });
         changed(walkthrough);
       },
     );
   };
 
-  /** Waits for the agent's rewritten summary and puts it in place. */
   const collectSummary = (walkthrough: Walkthrough) => {
-    const job = walkthrough.summaryJob;
-    if (!job) return;
-    void awaitAnswer(bb, {
-      threadId: walkthrough.threadId,
-      messageId: job.messageId,
-      afterSeq: job.afterSeq,
-      visible: job.visible,
-      signal: conversations.signal,
-    }).then(
-      (answer) => {
+    if (!walkthrough.summaryJob) return;
+    collect(
+      walkthrough.threadId,
+      walkthrough.summaryJob,
+      `summary ${walkthrough.id}`,
+      ({ answer, error }) => {
+        const { comments } = store.get(walkthrough.id);
         const updated = store.update(walkthrough.id, (draft) => {
-          draft.previousSummary = draft.summary;
-          draft.summary = answer;
-          draft.summaryBasis = summaryBasis(store.get(walkthrough.id).comments);
+          if (answer !== null) {
+            draft.previousSummary = draft.summary;
+            draft.summary = answer;
+            draft.summaryBasis = summaryBasis(comments);
+          }
           draft.summaryJob = null;
-          draft.summaryError = null;
-        });
-        changed(updated);
-      },
-      (error: unknown) => {
-        if (conversations.signal.aborted) return;
-        bb.log.warn(`summary ${walkthrough.id}: ${String(error)}`);
-        const updated = store.update(walkthrough.id, (draft) => {
-          draft.summaryJob = null;
-          draft.summaryError =
-            error instanceof AgentAnswerError
-              ? error.message
-              : "Could not get the agent's summary.";
+          draft.summaryError = error;
         });
         changed(updated);
       },
@@ -371,6 +398,64 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  // ── Publishing ────────────────────────────────────────────────────────
+  /** Walkthroughs being published right now, so a double click posts once. */
+  const publishing = new Set<string>();
+
+  /** Posts the GitHub review, or sends local feedback to the agent. */
+  const publish = async (id: string): Promise<{ url: string | null }> => {
+    const walkthrough = openWalkthrough(id);
+    const { comments } = store.get(id);
+    if (walkthrough.target.kind === "pr") {
+      const blockers = reviewBlockers(walkthrough, comments);
+      if (blockers.length > 0) throw new Error(blockers.join(" "));
+      let url: string;
+      try {
+        url = await submitReview(
+          {
+            repo: walkthrough.target.repo,
+            number: walkthrough.target.number,
+          },
+          buildReviewPayload(walkthrough, comments),
+        );
+      } catch (error) {
+        throw error instanceof GhError ? new Error(error.message) : error;
+      }
+      const updated = store.update(id, (draft) => {
+        draft.status = "submitted";
+        draft.submittedAt = Date.now();
+        draft.submittedUrl = url || null;
+      });
+      changed(updated);
+      return { url: updated.submittedUrl };
+    }
+    if (
+      countComments(comments).kept === 0 &&
+      walkthrough.summary.trim() === ""
+    ) {
+      throw new Error(
+        "Keep at least one comment or write a summary before sending feedback.",
+      );
+    }
+    await bb.sdk.threads.send({
+      threadId: walkthrough.threadId,
+      mode: "auto",
+      input: [
+        {
+          type: "text",
+          text: formatLocalFeedback(walkthrough, comments),
+          mentions: [],
+        },
+      ],
+    });
+    const updated = store.update(id, (draft) => {
+      draft.status = "sent";
+      draft.submittedAt = Date.now();
+    });
+    changed(updated);
+    return { url: null };
+  };
+
   const projectForRepo = async (repo: string) => {
     const projects = await bb.sdk.projects.list();
     return projects.find(
@@ -384,150 +469,11 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     get: ({ id }) => ({ ...store.get(id), discussions: store.discussions(id) }),
 
-    ask: async ({ id, body, discussionId, target }) => {
-      const { walkthrough, comments } = store.get(id);
-      const message = {
-        id: newMessageId(),
-        author: "you" as const,
-        body,
-        at: Date.now(),
-      };
-      let discussion: Discussion;
-      if (discussionId !== undefined) {
-        const existing = store.getDiscussion(id, discussionId);
-        if (existing.waiting !== null) {
-          throw new Error("The agent is still answering the last question.");
-        }
-        discussion = existing;
-      } else if (target !== undefined) {
-        discussion = store.createDiscussion({
-          walkthroughId: id,
-          stopId: target.stopId,
-          anchor: resolveAnchor(walkthrough, target.anchor),
-          commentId: target.commentId,
-          messages: [],
-          waiting: null,
-          error: null,
-          resolved: false,
-        });
-      } else {
-        throw new Error(
-          "Pass a conversation to continue or a place to start one.",
-        );
-      }
-      const comment =
-        comments.find((candidate) => candidate.id === discussion.commentId) ??
-        null;
-      const prompt = buildQuestionPrompt({
-        walkthrough,
-        discussion: {
-          ...discussion,
-          messages: [...discussion.messages, message],
-        },
-        comment,
-        messageId: message.id,
-      });
-      const afterSeq = await latestSeq(bb, walkthrough.threadId);
-      discussion = store.updateDiscussion(id, discussion.id, (draft) => {
-        draft.messages.push(message);
-        draft.waiting = {
-          messageId: message.id,
-          afterSeq,
-          visible: prompt.visible,
-        };
-        draft.error = null;
-        draft.resolved = false;
-      });
-      try {
-        await sendQuestion(bb, walkthrough.threadId, prompt);
-      } catch (error) {
-        store.updateDiscussion(id, discussion.id, (draft) => {
-          draft.waiting = null;
-          draft.error = "Could not reach the agent's thread.";
-        });
-        changed(walkthrough);
-        throw error;
-      }
-      collectAnswer(walkthrough, discussion);
-      changed(walkthrough);
-      return { discussion };
-    },
-
-    prDescription: async ({ id }) => {
-      const { walkthrough } = store.get(id);
-      if (walkthrough.target.kind !== "pr") return { body: null };
-      const ref = {
-        repo: walkthrough.target.repo,
-        number: walkthrough.target.number,
-      };
-      try {
-        return { body: await fetchPrDescription(ref) };
-      } catch {
-        // Offline or signed out: fall back to the copy taken at submission.
-        return { body: walkthrough.target.body ?? null };
-      }
-    },
-
-    rewriteSummary: async ({ id }) => {
-      const walkthrough = openWalkthrough(id);
-      if (walkthrough.summaryJob)
-        throw new Error("The agent is already rewriting the summary.");
-      const kept = keptComments(store.get(id).comments);
-      const messageId = newMessageId();
-      const prompt = buildSummaryPrompt({ walkthrough, kept, messageId });
-      const afterSeq = await latestSeq(bb, walkthrough.threadId);
-      const job = { messageId, afterSeq, visible: prompt.visible };
-      store.update(id, (draft) => {
-        draft.summaryJob = job;
-        draft.summaryError = null;
-      });
-      try {
-        await sendQuestion(bb, walkthrough.threadId, prompt);
-      } catch (error) {
-        changed(
-          store.update(id, (draft) => {
-            draft.summaryJob = null;
-            draft.summaryError = "Could not reach the agent's thread.";
-          }),
-        );
-        throw error;
-      }
-      collectSummary({ ...walkthrough, summaryJob: job });
-      changed(walkthrough);
-      return { ok: true as const };
-    },
-
-    undoSummaryRewrite: ({ id }) => {
-      openWalkthrough(id);
-      const updated = store.update(id, (draft) => {
-        if (draft.previousSummary == null) return;
-        draft.summary = draft.previousSummary;
-        draft.previousSummary = null;
-        draft.summaryBasis = null;
-      });
-      changed(updated);
-      return { ok: true as const };
-    },
-
-    resolveDiscussion: ({ id, discussionId, resolved }) => {
-      const { walkthrough } = store.get(id);
-      const discussion = store.updateDiscussion(id, discussionId, (draft) => {
-        draft.resolved = resolved;
-      });
-      changed(walkthrough);
-      return { discussion };
-    },
-
-    deleteDiscussion: ({ id, discussionId }) => {
-      const { walkthrough } = store.get(id);
-      store.deleteDiscussion(id, discussionId);
-      changed(walkthrough);
-      return { ok: true as const };
-    },
     latestForThread: ({ threadId }) => ({
       summary: store.latestForThread(threadId),
     }),
-    list: () => ({ walkthroughs: store.list(50) }),
+
+    list: () => ({ walkthroughs: store.list(RECENT_LIMIT) }),
 
     inbox: async () => {
       let requests;
@@ -606,30 +552,23 @@ export default async function plugin(bb: BbPluginApi) {
       return { comment };
     },
 
-    addComment: ({ id, path, side, line, startLine, body }) => {
+    addComment: ({ id, body, ...range }) => {
       const walkthrough = openWalkthrough(id);
-      const file = walkthrough.files.find(
-        (candidate) => candidate.path === path,
-      );
-      const start = startLine ?? line;
-      const hunk =
-        file === undefined || start > line
-          ? null
-          : findHunkForRange(file, side, start, line);
+      const hunk = findAnchorHunk(walkthrough, range);
       if (hunk === null) {
         throw new Error(
-          `${path}:${line} is outside the diff, so GitHub cannot anchor a comment there.`,
+          `${range.path}:${range.line} is outside the diff, so GitHub cannot anchor a comment there.`,
         );
       }
-      const stop = walkthrough.chapters
-        .flatMap((chapter) => chapter.stops)
-        .find((candidate) => candidate.hunkIds.includes(hunk.id));
+      const stop = allStops(walkthrough.chapters).find((candidate) =>
+        candidate.hunkIds.includes(hunk.id),
+      );
       const comment = store.addComment(id, {
         author: "you",
-        path,
-        side,
-        line,
-        startLine: start !== line ? start : null,
+        path: range.path,
+        side: range.side,
+        line: range.line,
+        startLine: isMultiLine(range) ? range.startLine : null,
         severity: null,
         originalBody: body,
         body,
@@ -646,7 +585,9 @@ export default async function plugin(bb: BbPluginApi) {
       const comment = store
         .get(id)
         .comments.find((candidate) => candidate.id === commentId);
-      if (comment?.author !== "you")
+      if (comment === undefined)
+        throw new NotFoundError(`No comment with id ${commentId}`);
+      if (comment.author !== "you")
         throw new Error(
           "Only your own comments can be deleted; discard a draft instead.",
         );
@@ -709,56 +650,171 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     submit: async ({ id }) => {
-      const walkthrough = openWalkthrough(id);
-      const { comments } = store.get(id);
-      if (walkthrough.target.kind === "pr") {
-        const blockers = reviewBlockers(walkthrough, comments);
-        if (blockers.length > 0) throw new Error(blockers.join(" "));
-        let url: string;
-        try {
-          url = await submitReview(
-            {
-              repo: walkthrough.target.repo,
-              number: walkthrough.target.number,
-            },
-            buildReviewPayload(walkthrough, comments),
-          );
-        } catch (error) {
-          throw error instanceof GhError ? new Error(error.message) : error;
-        }
-        const updated = store.update(id, (draft) => {
-          draft.status = "submitted";
-          draft.submittedAt = Date.now();
-          draft.submittedUrl = url || null;
-        });
-        changed(updated);
-        return { url: updated.submittedUrl };
+      if (publishing.has(id))
+        throw new Error("This walkthrough is already being published.");
+      publishing.add(id);
+      try {
+        return await publish(id);
+      } finally {
+        publishing.delete(id);
       }
-      if (
-        countComments(comments).kept === 0 &&
-        walkthrough.summary.trim() === ""
-      ) {
+    },
+
+    // Private conversations with the agent. Never posted or sent as feedback.
+    ask: async ({ id, body, discussionId, target }) => {
+      const { walkthrough, comments } = store.get(id);
+      const existing =
+        discussionId === undefined
+          ? null
+          : store.getDiscussion(id, discussionId);
+      if (existing?.waiting) throw new Error(STILL_ANSWERING);
+      // Where the conversation sits: the one being continued, or a new place.
+      let place: Pick<Discussion, "stopId" | "commentId" | "anchor">;
+      if (existing !== null) {
+        place = existing;
+      } else if (target !== undefined) {
+        place = {
+          stopId: target.stopId,
+          commentId: target.commentId,
+          anchor: resolveAnchor(walkthrough, target.anchor),
+        };
+      } else {
         throw new Error(
-          "Keep at least one comment or write a summary before sending feedback.",
+          "Pass a conversation to continue or a place to start one.",
         );
       }
-      await bb.sdk.threads.send({
-        threadId: walkthrough.threadId,
-        mode: "auto",
-        input: [
-          {
-            type: "text",
-            text: formatLocalFeedback(walkthrough, comments),
-            mentions: [],
-          },
-        ],
+
+      const message: DiscussionMessage = {
+        id: newMessageId(),
+        author: "you",
+        body,
+        at: Date.now(),
+      };
+      const messages = [...(existing?.messages ?? []), message];
+      const prompt = buildQuestionPrompt({
+        walkthrough,
+        discussion: { ...place, messages },
+        comment:
+          comments.find((candidate) => candidate.id === place.commentId) ??
+          null,
+        messageId: message.id,
       });
+      const waiting = {
+        messageId: message.id,
+        afterSeq: await latestSeq(bb, walkthrough.threadId),
+        visible: prompt.visible,
+      };
+      // Recorded before sending, so a reload mid-send still resumes the wait.
+      const discussion =
+        existing === null
+          ? store.createDiscussion({
+              walkthroughId: id,
+              ...place,
+              messages,
+              waiting,
+              error: null,
+              resolved: false,
+            })
+          : store.updateDiscussion(id, existing.id, (draft) => {
+              // Another question may have gone out while reading the cursor.
+              if (draft.waiting !== null) throw new Error(STILL_ANSWERING);
+              draft.messages.push(message);
+              draft.waiting = waiting;
+              draft.error = null;
+              draft.resolved = false;
+            });
+      try {
+        await sendQuestion(bb, walkthrough.threadId, prompt);
+      } catch (error) {
+        store.updateDiscussion(id, discussion.id, (draft) => {
+          draft.waiting = null;
+          draft.error = THREAD_UNREACHABLE;
+        });
+        changed(walkthrough);
+        throw error;
+      }
+      collectAnswer(walkthrough, discussion);
+      changed(walkthrough);
+      return { discussion };
+    },
+
+    prDescription: async ({ id }) => {
+      const { walkthrough } = store.get(id);
+      if (walkthrough.target.kind !== "pr") return { body: null };
+      const ref = {
+        repo: walkthrough.target.repo,
+        number: walkthrough.target.number,
+      };
+      try {
+        return { body: await fetchPrDescription(ref) };
+      } catch {
+        // Offline or signed out: fall back to the copy taken at submission.
+        return { body: walkthrough.target.body ?? null };
+      }
+    },
+
+    rewriteSummary: async ({ id }) => {
+      const walkthrough = openWalkthrough(id);
+      if (walkthrough.summaryJob) throw new Error(ALREADY_REWRITING);
+      const messageId = newMessageId();
+      const prompt = buildSummaryPrompt({
+        walkthrough,
+        kept: keptComments(store.get(id).comments),
+        messageId,
+      });
+      const job = {
+        messageId,
+        afterSeq: await latestSeq(bb, walkthrough.threadId),
+        visible: prompt.visible,
+      };
       const updated = store.update(id, (draft) => {
-        draft.status = "sent";
-        draft.submittedAt = Date.now();
+        // Another rewrite may have started while reading the cursor.
+        if (draft.summaryJob) throw new Error(ALREADY_REWRITING);
+        draft.summaryJob = job;
+        draft.summaryError = null;
+      });
+      try {
+        await sendQuestion(bb, walkthrough.threadId, prompt);
+      } catch (error) {
+        changed(
+          store.update(id, (draft) => {
+            draft.summaryJob = null;
+            draft.summaryError = THREAD_UNREACHABLE;
+          }),
+        );
+        throw error;
+      }
+      collectSummary(updated);
+      changed(updated);
+      return { ok: true as const };
+    },
+
+    undoSummaryRewrite: ({ id }) => {
+      openWalkthrough(id);
+      const updated = store.update(id, (draft) => {
+        if (draft.previousSummary == null) return;
+        draft.summary = draft.previousSummary;
+        draft.previousSummary = null;
+        draft.summaryBasis = null;
       });
       changed(updated);
-      return { url: null };
+      return { ok: true as const };
+    },
+
+    resolveDiscussion: ({ id, discussionId, resolved }) => {
+      const { walkthrough } = store.get(id);
+      const discussion = store.updateDiscussion(id, discussionId, (draft) => {
+        draft.resolved = resolved;
+      });
+      changed(walkthrough);
+      return { discussion };
+    },
+
+    deleteDiscussion: ({ id, discussionId }) => {
+      const { walkthrough } = store.get(id);
+      store.deleteDiscussion(id, discussionId);
+      changed(walkthrough);
+      return { ok: true as const };
     },
   });
 
@@ -783,6 +839,29 @@ export default async function plugin(bb: BbPluginApi) {
       { code: "failed" },
     );
   };
+
+  const getForCli = (id: string) => {
+    try {
+      return store.get(id);
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+      throw new PluginCliError(error.message, {
+        code: "not_found",
+        hint: "Run `bb walkthrough list` for ids.",
+      });
+    }
+  };
+
+  const idPositional = {
+    name: "id",
+    description: "Walkthrough id (wt_…)",
+    required: true,
+  } as const;
+
+  const jsonOption = {
+    type: "boolean",
+    description: "Emit machine-readable JSON",
+  } as const;
 
   bb.cli.register(
     defineCli({
@@ -809,10 +888,7 @@ export default async function plugin(bb: BbPluginApi) {
               type: "string",
               description: "One commit SHA in this thread's checkout",
             },
-            json: {
-              type: "boolean",
-              description: "Emit machine-readable JSON",
-            },
+            json: jsonOption,
           },
           constraints: [
             { kind: "exactly-one", options: ["pr", "local", "commit"] },
@@ -892,9 +968,7 @@ export default async function plugin(bb: BbPluginApi) {
             } catch (error) {
               throw new PluginCliError(
                 `${path} is not valid JSON: ${(error as Error).message}`,
-                {
-                  code: "invalid_json",
-                },
+                { code: "invalid_json" },
               );
             }
             const parsed = documentSchema.safeParse(raw);
@@ -941,15 +1015,11 @@ export default async function plugin(bb: BbPluginApi) {
               threadId,
             });
             changed(walkthrough);
-            const stops = walkthrough.chapters.reduce(
-              (sum, chapter) => sum + chapter.stops.length,
-              0,
-            );
             return {
               exitCode: 0,
               stdout: [
                 `Walkthrough ${walkthrough.id} is open beside this thread: ${walkthrough.chapters.length} chapters, ` +
-                  `${stops} stops, ${resolution.walkthrough.comments.length} draft comments on ${describeTarget(snapshot.target)}.`,
+                  `${allStops(walkthrough.chapters).length} stops, ${resolution.walkthrough.comments.length} draft comments on ${describeTarget(snapshot.target)}.`,
                 "End your reply with this line, on its own, so the user can open it:",
                 "",
                 `::walkthrough{id="${walkthrough.id}"}`,
@@ -960,33 +1030,10 @@ export default async function plugin(bb: BbPluginApi) {
 
         show: cliCommand({
           summary: "Show a walkthrough's comments and the reviewer's decisions",
-          positionals: [
-            {
-              name: "id",
-              description: "Walkthrough id (wt_…)",
-              required: true,
-            },
-          ],
-          options: {
-            json: {
-              type: "boolean",
-              description: "Emit machine-readable JSON",
-            },
-          },
+          positionals: [idPositional],
+          options: { json: jsonOption },
           async run(input) {
-            let result;
-            try {
-              result = store.get(input.positionals.id);
-            } catch (error) {
-              if (error instanceof NotFoundError) {
-                throw new PluginCliError(error.message, {
-                  code: "not_found",
-                  hint: "Run `bb walkthrough list` for ids.",
-                });
-              }
-              throw error;
-            }
-            const { walkthrough, comments } = result;
+            const { walkthrough, comments } = getForCli(input.positionals.id);
             if (input.options.json) {
               const { files: _files, ...rest } = walkthrough;
               return {
@@ -1012,43 +1059,20 @@ export default async function plugin(bb: BbPluginApi) {
 
         delete: cliCommand({
           summary: "Delete a walkthrough and its draft comments",
-          positionals: [
-            {
-              name: "id",
-              description: "Walkthrough id (wt_…)",
-              required: true,
-            },
-          ],
+          positionals: [idPositional],
           async run(input) {
-            const { threadId } = (() => {
-              try {
-                return store.get(input.positionals.id).walkthrough;
-              } catch {
-                throw new PluginCliError(
-                  `No walkthrough with id ${input.positionals.id}`,
-                  {
-                    code: "not_found",
-                    hint: "Run `bb walkthrough list` for ids.",
-                  },
-                );
-              }
-            })();
-            store.remove(input.positionals.id);
-            changed({ id: input.positionals.id, threadId });
-            return { exitCode: 0, stdout: `Deleted ${input.positionals.id}` };
+            const { walkthrough } = getForCli(input.positionals.id);
+            store.remove(walkthrough.id);
+            changed(walkthrough);
+            return { exitCode: 0, stdout: `Deleted ${walkthrough.id}` };
           },
         }),
 
         list: cliCommand({
           summary: "List recent walkthroughs",
-          options: {
-            json: {
-              type: "boolean",
-              description: "Emit machine-readable JSON",
-            },
-          },
+          options: { json: jsonOption },
           async run(input) {
-            const walkthroughs = store.list(50);
+            const walkthroughs = store.list(RECENT_LIMIT);
             if (input.options.json)
               return { exitCode: 0, stdout: JSON.stringify(walkthroughs) };
             if (walkthroughs.length === 0)
@@ -1073,24 +1097,20 @@ function formatHunks(label: string, files: readonly DiffFile[]): string {
   if (files.length === 0) return `${label}: no changes.`;
   const out = [`${label}: ${files.length} files`];
   for (const file of files) {
-    let additions = 0;
-    let deletions = 0;
-    for (const hunk of file.hunks) {
-      const stat = hunkStats(hunk);
-      additions += stat.additions;
-      deletions += stat.deletions;
-    }
+    const stats = file.hunks.map(hunkStats);
+    const additions = stats.reduce((sum, stat) => sum + stat.additions, 0);
+    const deletions = stats.reduce((sum, stat) => sum + stat.deletions, 0);
     const rename = file.previousPath ? ` (from ${file.previousPath})` : "";
     out.push(
       "",
       `${file.path}${rename}  ${file.status}${file.binary ? ", binary" : ""}  +${additions} -${deletions}`,
     );
-    for (const hunk of file.hunks) {
-      const stat = hunkStats(hunk);
+    file.hunks.forEach((hunk, index) => {
+      const stat = stats[index]!;
       out.push(
         `  ${hunk.id}  ${hunk.header}  (+${stat.additions} -${stat.deletions})`,
       );
-    }
+    });
   }
   return out.join("\n");
 }
@@ -1099,25 +1119,34 @@ function newMessageId(): string {
   return `dm_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
 
+interface AnchorRange extends LineRange {
+  path: string;
+  side: Side;
+}
+
+/**
+ * The hunk of the walkthrough's snapshot that holds every line of `range`,
+ * or null when GitHub could not anchor a comment there.
+ */
+function findAnchorHunk(
+  walkthrough: Walkthrough,
+  range: AnchorRange,
+): DiffHunk | null {
+  const file = walkthrough.files.find(
+    (candidate) => candidate.path === range.path,
+  );
+  const start = range.startLine ?? range.line;
+  if (file === undefined || start > range.line) return null;
+  return findHunkForRange(file, range.side, start, range.line);
+}
+
 /** Checks a conversation's line range against the snapshot it is about. */
 function resolveAnchor(
   walkthrough: Walkthrough,
-  anchor: {
-    path: string;
-    side: "LEFT" | "RIGHT";
-    line: number;
-    startLine: number | null;
-  } | null,
+  anchor: AnchorRange | null,
 ): Discussion["anchor"] {
   if (anchor === null) return null;
-  const file = walkthrough.files.find(
-    (candidate) => candidate.path === anchor.path,
-  );
-  const start = anchor.startLine ?? anchor.line;
-  const hunk =
-    file === undefined || start > anchor.line
-      ? null
-      : findHunkForRange(file, anchor.side, start, anchor.line);
+  const hunk = findAnchorHunk(walkthrough, anchor);
   if (hunk === null)
     throw new Error(
       `${anchor.path}:${anchor.line} is not in this walkthrough's diff.`,
@@ -1126,7 +1155,7 @@ function resolveAnchor(
     path: anchor.path,
     side: anchor.side,
     line: anchor.line,
-    startLine: start !== anchor.line ? start : null,
+    startLine: isMultiLine(anchor) ? anchor.startLine : null,
     hunkId: hunk.id,
   };
 }

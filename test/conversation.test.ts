@@ -60,7 +60,7 @@ function discussion(overrides: Partial<Discussion> = {}): Discussion {
 
 describe("anchorExcerpt", () => {
   it("shows the anchored lines with context, numbered on the commented side", () => {
-    expect(anchorExcerpt(files, discussion(), 1)).toBe(
+    expect(anchorExcerpt(files, discussion().anchor, 1)).toBe(
       [
         "   11 -  await post(event.url, body);",
         "   11 +  try {",
@@ -74,7 +74,7 @@ describe("anchorExcerpt", () => {
   });
 
   it("is null for a stop-level conversation", () => {
-    expect(anchorExcerpt(files, discussion({ anchor: null }))).toBeNull();
+    expect(anchorExcerpt(files, null)).toBeNull();
   });
 });
 

@@ -3,7 +3,10 @@
 // annotation slot, so this renders through the host-shimmed @pierre/diffs
 // directly and borrows bb's code theme.
 import { Fragment, memo, useMemo, useState } from "react";
-import { Markdown } from "@get-bb/plugin-sdk/app";
+import {
+  Markdown,
+  experimental_useCodeTheme as useCodeTheme,
+} from "@get-bb/plugin-sdk/app";
 import {
   parsePatchFiles,
   type DiffLineAnnotation,
@@ -11,8 +14,9 @@ import {
   type SelectedLineRange,
 } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
-import { experimental_useCodeTheme as useCodeTheme } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Icon } from "@/components/ui/icon";
 import {
   renderFilePatch,
   type DiffFile,
@@ -21,8 +25,6 @@ import {
 } from "../src/diff";
 import type { Discussion, DraftComment } from "../src/model";
 import { CommentCard, newCommentLabel, NewCommentCard } from "./CommentCard";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Icon } from "@/components/ui/icon";
 import { DiscussionCard } from "./DiscussionCard";
 import { errorMessage, type Rpc } from "./shared";
 
@@ -65,6 +67,26 @@ function annotationSide(side: Side): "deletions" | "additions" {
   return side === "LEFT" ? "deletions" : "additions";
 }
 
+/**
+ * Props are unchanged when every value is, comparing arrays item by item.
+ * The comment lists are filtered afresh on each render, but their items keep
+ * their identity until they change (see `keepStableParts`), so a realtime
+ * refresh only re-renders the files whose comments actually changed.
+ */
+function sameProps<P extends object>(previous: P, next: P): boolean {
+  return (Object.keys(next) as (keyof P)[]).every((key) => {
+    const before = previous[key];
+    const after = next[key];
+    if (Array.isArray(before) && Array.isArray(after)) {
+      return (
+        before.length === after.length &&
+        before.every((item, index) => Object.is(item, after[index]))
+      );
+    }
+    return Object.is(before, after);
+  });
+}
+
 const FileBlock = memo(function FileBlock({
   file,
   hunks,
@@ -96,7 +118,7 @@ const FileBlock = memo(function FileBlock({
   onCommentChanged: (id: string, comment: DraftComment | null) => void;
   onDiscussionChanged: (id: string, discussion: Discussion | null) => void;
   viewed: boolean;
-  onViewedChange: (viewed: boolean) => void;
+  onViewedChange: (stopId: string, path: string, viewed: boolean) => void;
 }) {
   const { theme, themeType } = useDiffTheme();
   // Viewed files collapse; the reviewer can open one again without
@@ -256,7 +278,7 @@ const FileBlock = memo(function FileBlock({
               checked={viewed}
               onCheckedChange={(checked) => {
                 setReopened(false);
-                onViewedChange(checked === true);
+                onViewedChange(stopId, file.path, checked === true);
               }}
               aria-label={`Mark ${file.path} viewed`}
             />
@@ -317,7 +339,7 @@ const FileBlock = memo(function FileBlock({
       />
     );
   }
-});
+}, sameProps);
 
 export function StopDiff({
   viewedPaths,
@@ -350,7 +372,7 @@ export function StopDiff({
   onDiscussionChanged: (id: string, discussion: Discussion | null) => void;
   /** Paths marked Viewed in this stop. */
   viewedPaths: ReadonlySet<string>;
-  onViewedChange: (path: string, viewed: boolean) => void;
+  onViewedChange: (stopId: string, path: string, viewed: boolean) => void;
 }) {
   const [composer, setComposer] = useState<Composer | null>(null);
 
@@ -378,8 +400,9 @@ export function StopDiff({
         const fileNotes = notes.filter((note) => ids.has(note.hunkId));
         return (
           <Fragment key={file.path}>
-            {fileNotes.map((note) => (
-              <NoteQuote key={note.hunkId} body={note.body} />
+            {fileNotes.map((note, index) => (
+              // A hunk may carry more than one note.
+              <NoteQuote key={index} body={note.body} />
             ))}
             <FileBlock
               file={file}
@@ -403,7 +426,7 @@ export function StopDiff({
               onCommentChanged={onCommentChanged}
               onDiscussionChanged={onDiscussionChanged}
               viewed={viewedPaths.has(file.path)}
-              onViewedChange={(viewed) => onViewedChange(file.path, viewed)}
+              onViewedChange={onViewedChange}
             />
           </Fragment>
         );

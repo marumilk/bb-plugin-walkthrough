@@ -97,7 +97,7 @@ export function parseUnifiedDiff(
         line === ""
       ) {
         const body = line === "" ? " " : line;
-        (hunk as DiffHunk).lines.push(body);
+        hunk.lines.push(body);
         if (marker === "\\") continue;
         if (marker !== "+") oldLeft -= 1;
         if (marker !== "-") newLeft -= 1;
@@ -105,7 +105,7 @@ export function parseUnifiedDiff(
       }
     }
     if (hunk !== null && line.startsWith("\\")) {
-      (hunk as DiffHunk).lines.push(line);
+      hunk.lines.push(line);
       continue;
     }
 

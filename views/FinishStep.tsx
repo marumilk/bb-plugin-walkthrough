@@ -29,11 +29,14 @@ export function FinishStep({
   walkthrough,
   comments,
   rpc,
+  headMoved,
   onJumpToComment,
 }: {
   walkthrough: Walkthrough;
   comments: readonly DraftComment[];
   rpc: Rpc;
+  /** The pull request has new commits since the snapshot. */
+  headMoved: boolean;
   onJumpToComment: (comment: DraftComment) => void;
 }) {
   const isPr = walkthrough.target.kind === "pr";
@@ -41,7 +44,6 @@ export function FinishStep({
   const [summary, setSummary] = useState(walkthrough.summary);
   const [verdict, setVerdict] = useState<Verdict>(walkthrough.verdict);
   const [submitting, setSubmitting] = useState(false);
-  const [headMoved, setHeadMoved] = useState(false);
   const saved = useRef({
     summary: walkthrough.summary,
     verdict: walkthrough.verdict,
@@ -57,14 +59,6 @@ export function FinishStep({
     );
     saved.current = { ...saved.current, summary: walkthrough.summary };
   }, [walkthrough.summary]);
-
-  useEffect(() => {
-    if (!isPr || readOnly) return;
-    rpc.call("headStatus", { id: walkthrough.id }).then(
-      (result) => setHeadMoved(result.moved),
-      () => {},
-    );
-  }, [rpc, walkthrough.id, isPr, readOnly]);
 
   const persist = async (next: { summary: string; verdict: Verdict }) => {
     if (

@@ -1,18 +1,21 @@
 // Small app-side helpers shared by the tab, header button, directive, and
 // Reviews page.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useRealtime,
   useRpc,
   type PluginRpcClient,
 } from "@get-bb/plugin-sdk/app";
-import type { Discussion, DraftComment, Walkthrough } from "../src/model";
+import {
+  WALKTHROUGH_CHANGED,
+  type Discussion,
+  type DraftComment,
+  type Walkthrough,
+} from "../src/model";
 import type { rpcContract } from "../server";
 
 /** The thread action tab id registered in app.tsx. */
 export const WALKTHROUGH_TAB = "walkthrough";
-export const WALKTHROUGH_CHANGED = "walkthrough-changed";
-export const WALKTHROUGH_READY = "walkthrough-ready";
 
 export type Rpc = PluginRpcClient<typeof rpcContract>;
 
@@ -79,14 +82,20 @@ export function useWalkthrough(id: string | null) {
   const rpc = useWalkthroughRpc();
   const [data, setData] = useState<WalkthroughData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const latestRequest = useRef(0);
   const refetch = useCallback(() => {
     if (id === null) return;
+    // Realtime refreshes can overlap; only the newest request may land.
+    const request = ++latestRequest.current;
     rpc.call("get", { id }).then(
       (result) => {
+        if (request !== latestRequest.current) return;
         setData((previous) => keepStableParts(previous, result));
         setError(null);
       },
-      (cause: unknown) => setError(errorMessage(cause)),
+      (cause: unknown) => {
+        if (request === latestRequest.current) setError(errorMessage(cause));
+      },
     );
   }, [rpc, id]);
   useEffect(refetch, [refetch]);

@@ -7,20 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import type { Discussion } from "../src/model";
-import { CommentEditor } from "./CommentCard";
+import { CommentEditor, lineLabel } from "./CommentCard";
 import { errorMessage, type Rpc } from "./shared";
 
 /** Markdown with chat-like density: short line height and small block gaps. */
 const COMPACT_PROSE =
   "min-w-0 text-sm leading-5 text-foreground [&_p]:mb-1.5 [&_ul]:mb-1.5 [&_ul]:pl-4 [&_ol]:mb-1.5 [&_ol]:pl-4 [&_li]:mb-0.5 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&>*:last-child]:mb-0";
-
-function anchorLabel(discussion: Discussion): string {
-  const anchor = discussion.anchor;
-  if (anchor === null) return "This stop";
-  return anchor.startLine !== null && anchor.startLine !== anchor.line
-    ? `Lines ${anchor.startLine}–${anchor.line}`
-    : `Line ${anchor.line}`;
-}
 
 export function DiscussionCard({
   discussion,
@@ -125,7 +117,11 @@ export function DiscussionCard({
         <span aria-hidden="true">·</span>
         <span>Conversation with the agent</span>
         <span aria-hidden="true">·</span>
-        <span>{anchorLabel(discussion)}</span>
+        <span>
+          {discussion.anchor === null
+            ? "This stop"
+            : lineLabel(discussion.anchor)}
+        </span>
         <span className="ml-auto inline-flex items-center gap-0.5">
           <Button
             variant="ghost"

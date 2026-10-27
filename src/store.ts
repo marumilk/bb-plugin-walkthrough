@@ -217,7 +217,7 @@ export function createStore(bb: BbPluginApi) {
 
     /** The newest walkthrough of one pull request, for the inbox. */
     latestForPr(repo: string, number: number): WalkthroughSummary | null {
-      const rows = db
+      const row = db
         .prepare(
           `SELECT data FROM walkthroughs
            WHERE json_extract(data, '$.target.kind') = 'pr'
@@ -225,8 +225,7 @@ export function createStore(bb: BbPluginApi) {
              AND json_extract(data, '$.target.number') = ?
            ORDER BY created_at DESC LIMIT 1`,
         )
-        .all(repo, number) as { data: string }[];
-      const row = rows[0];
+        .get(repo, number) as { data: string } | undefined;
       return row === undefined
         ? null
         : summarize(JSON.parse(row.data) as Walkthrough);

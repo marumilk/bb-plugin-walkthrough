@@ -8,7 +8,13 @@ import { Icon } from "@/components/ui/icon";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { Severity } from "../src/document";
-import type { CommentStatus, DraftComment } from "../src/model";
+import {
+  isMultiLine,
+  lineSpan,
+  type CommentStatus,
+  type DraftComment,
+  type LineRange,
+} from "../src/model";
 import { errorMessage, type Rpc } from "./shared";
 
 const SEVERITY_LABEL: Record<Severity, string> = {
@@ -20,10 +26,9 @@ const SEVERITY_LABEL: Record<Severity, string> = {
   praise: "Praise",
 };
 
-function lineLabel(comment: Pick<DraftComment, "line" | "startLine">): string {
-  return comment.startLine !== null && comment.startLine !== comment.line
-    ? `Lines ${comment.startLine}–${comment.line}`
-    : `Line ${comment.line}`;
+/** "Line 15" or "Lines 13–15". */
+export function lineLabel(range: LineRange): string {
+  return `${isMultiLine(range) ? "Lines" : "Line"} ${lineSpan(range, "–")}`;
 }
 
 /** ⌘/Ctrl+Enter saves and Escape cancels, as in GitHub's comment boxes. */

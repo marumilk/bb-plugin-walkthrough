@@ -236,11 +236,11 @@ export function resolveDocument(
       const path = parseHunkId(id)!.path;
       byFile.set(path, [...(byFile.get(path) ?? []), id]);
     }
+    // Each group is one stop: a list of files, each a list of hunk ids.
     const groups: string[][][] = [];
     for (const hunkIds of byFile.values()) {
       const last = groups.at(-1);
-      const size =
-        last?.reduce((sum, file) => sum + file.length, 0) ?? Infinity;
+      const size = last?.reduce((sum, file) => sum + file.length, 0) ?? 0;
       if (last !== undefined && size + hunkIds.length <= MAX_HUNKS_PER_STOP)
         last.push(hunkIds);
       else groups.push([hunkIds]);

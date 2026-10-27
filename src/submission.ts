@@ -1,7 +1,12 @@
 // What leaves BB when the reviewer finishes: a GitHub review for a pull
 // request, or a feedback message to the agent for local changes. Pure, so the
 // exact payloads are unit-tested.
-import type { DraftComment, Walkthrough } from "./model";
+import {
+  isMultiLine,
+  lineSpan,
+  type DraftComment,
+  type Walkthrough,
+} from "./model";
 
 export interface GitHubReviewPayload {
   commit_id: string;
@@ -42,8 +47,8 @@ export function buildReviewPayload(
       body: comment.body.trim(),
       line: comment.line,
       side: comment.side,
-      ...(comment.startLine !== null && comment.startLine !== comment.line
-        ? { start_line: comment.startLine, start_side: comment.side }
+      ...(isMultiLine(comment)
+        ? { start_line: comment.startLine!, start_side: comment.side }
         : {}),
     })),
   };
@@ -54,14 +59,15 @@ export function buildReviewPayload(
  * their wording. When it changes, the summary may be out of date.
  */
 export function summaryBasis(comments: readonly DraftComment[]): string {
-  const text = keptComments(comments)
+  const kept = keptComments(comments);
+  const text = kept
     .map((comment) => `${comment.path}:${comment.line}:${comment.body.trim()}`)
     .sort()
     .join("\n");
   let hash = 5381;
   for (let i = 0; i < text.length; i += 1)
     hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
-  return `${keptComments(comments).length}:${(hash >>> 0).toString(36)}`;
+  return `${kept.length}:${(hash >>> 0).toString(36)}`;
 }
 
 /** Problems that would make GitHub reject the review, shown before posting. */
@@ -88,11 +94,7 @@ export function reviewBlockers(
 }
 
 function location(comment: DraftComment): string {
-  const lines =
-    comment.startLine !== null && comment.startLine !== comment.line
-      ? `${comment.startLine}-${comment.line}`
-      : `${comment.line}`;
-  return `${comment.path}:${lines}${comment.side === "LEFT" ? " (removed lines)" : ""}`;
+  return `${comment.path}:${lineSpan(comment)}${comment.side === "LEFT" ? " (removed lines)" : ""}`;
 }
 
 /** The message sent to the authoring thread for a local walkthrough. */

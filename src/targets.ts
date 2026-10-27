@@ -24,12 +24,12 @@ export async function threadContext(
 ): Promise<ThreadContext> {
   const thread = await bb.sdk.threads.get({ threadId });
   const environmentId = thread.environmentId ?? null;
-  const environment = environmentId
-    ? await bb.sdk.environments.get({ environmentId })
-    : null;
-  const project = thread.projectId
-    ? await bb.sdk.projects.get({ projectId: thread.projectId })
-    : null;
+  const [environment, project] = await Promise.all([
+    environmentId ? bb.sdk.environments.get({ environmentId }) : null,
+    thread.projectId
+      ? bb.sdk.projects.get({ projectId: thread.projectId })
+      : null,
+  ]);
   return {
     threadId,
     projectId: thread.projectId ?? null,
@@ -117,24 +117,33 @@ export async function snapshotTarget(
   };
 }
 
+// BB's environment diff APIs name the same target two ways: diffFiles takes
+// it flattened under `target`, diffPatch nested with `type`.
+function filesQuery(diff: LocalDiff) {
+  return diff.type === "uncommitted"
+    ? ({ target: "uncommitted" } as const)
+    : diff.type === "commit"
+      ? ({ target: "commit", sha: diff.sha } as const)
+      : ({ target: diff.type, mergeBaseBranch: diff.mergeBaseBranch } as const);
+}
+
+function patchTarget(diff: LocalDiff) {
+  return diff.type === "uncommitted"
+    ? ({ type: "uncommitted" } as const)
+    : diff.type === "commit"
+      ? ({ type: "commit", sha: diff.sha } as const)
+      : ({ type: diff.type, mergeBaseBranch: diff.mergeBaseBranch } as const);
+}
+
 async function localFiles(
   bb: BbPluginApi,
   environmentId: string,
   diff: LocalDiff,
   signal?: AbortSignal,
 ): Promise<DiffFile[]> {
-  const query =
-    diff.type === "uncommitted"
-      ? ({ target: "uncommitted" } as const)
-      : diff.type === "commit"
-        ? ({ target: "commit", sha: diff.sha } as const)
-        : ({
-            target: diff.type,
-            mergeBaseBranch: diff.mergeBaseBranch,
-          } as const);
   const listing = await bb.sdk.environments.diffFiles({
     environmentId,
-    ...query,
+    ...filesQuery(diff),
     signal,
   });
   if (listing.outcome !== "available") {
@@ -155,12 +164,7 @@ async function localFiles(
   if (missing.length > 0) {
     const fetched = await bb.sdk.environments.diffPatch({
       environmentId,
-      target:
-        diff.type === "uncommitted"
-          ? { type: "uncommitted" }
-          : diff.type === "commit"
-            ? { type: "commit", sha: diff.sha }
-            : { type: diff.type, mergeBaseBranch: diff.mergeBaseBranch },
+      target: patchTarget(diff),
       paths: missing,
       signal,
     });

@@ -15,12 +15,16 @@ export interface TimelineStep {
   kind: "overview" | "stop" | "finish";
   chapter: ResolvedChapter | null;
   stop: ResolvedStop | null;
+  /** 1-based position among stops, for "Stop 3 of 9". */
   number: number;
 }
 
 /** How far the PR has moved since the walkthrough's snapshot. */
-export interface BehindStatus {
+export interface HeadStatus {
+  moved: boolean;
+  /** Commits the PR gained; null for local changes. */
   behindBy: number | null;
+  /** The branch was rewritten (force-pushed). */
   diverged: boolean;
 }
 
@@ -114,7 +118,7 @@ function Node({
   );
 }
 
-function BehindBadge({ status }: { status: BehindStatus }) {
+function BehindBadge({ status }: { status: HeadStatus }) {
   if (status.behindBy === null) return null;
   if (status.behindBy === 0 && !status.diverged) {
     return (
@@ -155,7 +159,7 @@ export function Timeline({
   currentId: string;
   doneStops: ReadonlySet<string>;
   pendingByStop: ReadonlyMap<string, number>;
-  behind: BehindStatus | null;
+  behind: HeadStatus | null;
   onSelect: (id: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);

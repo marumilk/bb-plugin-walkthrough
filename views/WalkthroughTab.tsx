@@ -10,9 +10,9 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { EmptyStatePanel } from "@/components/ui/empty-state";
 import { Icon } from "@/components/ui/icon";
-import { cn } from "@/lib/utils";
-import type { ResolvedChapter, ResolvedStop } from "../src/document";
+import type { ResolvedChapter } from "../src/document";
 import {
+  allStops,
   countComments,
   describeTarget,
   viewedKey,
@@ -22,23 +22,18 @@ import {
 } from "../src/model";
 import { FinishStep } from "./FinishStep";
 import { Hint } from "./Hint";
-import { errorMessage, pluralize, useWalkthrough } from "./shared";
+import { errorMessage, useWalkthrough } from "./shared";
 import { OverviewStep } from "./OverviewStep";
 import { StopCard } from "./StopCard";
-import { Timeline, type BehindStatus } from "./Timeline";
+import {
+  Timeline,
+  type HeadStatus,
+  type TimelineStep as Step,
+} from "./Timeline";
 import { StopDiff } from "./StopDiff";
 
 const FINISH = "finish";
 const OVERVIEW = "overview";
-
-interface Step {
-  id: string;
-  kind: "overview" | "stop" | "finish";
-  chapter: ResolvedChapter | null;
-  stop: ResolvedStop | null;
-  /** 1-based position among stops, for "Stop 3 of 9". */
-  number: number;
-}
 
 function buildSteps(
   chapters: readonly ResolvedChapter[],
@@ -116,7 +111,7 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
   const id = readId(params);
   const { rpc, data, setData, error } = useWalkthrough(id);
   const [stepId, setStepId] = useState<string | null>(null);
-  const [behind, setBehind] = useState<BehindStatus | null>(null);
+  const [head, setHead] = useState<HeadStatus | null>(null);
   const [diffStyle, setDiffStyle] = useState<"unified" | "split">("unified");
   const scrollRef = useRef<HTMLDivElement>(null);
   const pendingScroll = useRef<string | null>(null);
@@ -146,14 +141,14 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
     [id, rpc],
   );
 
-  // How far the PR has moved since the snapshot, for the timeline's badge.
+  // How far the PR has moved since the snapshot, for the timeline's badge
+  // and the Finish step's warning.
   useEffect(() => {
     if (id === null || !isPr) return;
     let cancelled = false;
     rpc.call("headStatus", { id }).then(
       (result) => {
-        if (!cancelled)
-          setBehind({ behindBy: result.behindBy, diverged: result.diverged });
+        if (!cancelled) setHead(result);
       },
       () => {},
     );
@@ -352,7 +347,7 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
             currentId={current.id}
             doneStops={doneStops(walkthrough)}
             pendingByStop={pendingByStop(comments)}
-            behind={behind}
+            behind={head}
             onSelect={goTo}
           />
         </div>
@@ -380,6 +375,7 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
                 walkthrough={walkthrough}
                 comments={comments}
                 rpc={rpc}
+                headMoved={head?.moved ?? false}
                 onJumpToComment={(comment) =>
                   goTo(comment.stopId || firstStop.id, comment.id)
                 }
@@ -433,9 +429,7 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
                 onCommentChanged={onCommentChanged}
                 onDiscussionChanged={onDiscussionChanged}
                 viewedPaths={viewedInStop(walkthrough, current.stop.id)}
-                onViewedChange={(path, viewed) =>
-                  setViewed(current.stop!.id, path, viewed)
-                }
+                onViewedChange={setViewed}
               />
             </>
           ) : null}
@@ -468,7 +462,7 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
       </footer>
       {error !== null ? (
         <p className="sr-only" role="alert">
-          {errorMessage(error)}
+          {error}
         </p>
       ) : null}
     </div>
@@ -489,7 +483,7 @@ function viewedInStop(
 
 function doneStops(walkthrough: Walkthrough): ReadonlySet<string> {
   const done = new Set<string>();
-  for (const stop of walkthrough.chapters.flatMap((chapter) => chapter.stops)) {
+  for (const stop of allStops(walkthrough.chapters)) {
     const paths = new Set(
       walkthrough.files
         .filter((file) =>

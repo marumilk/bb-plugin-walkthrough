@@ -35,10 +35,14 @@ const deliverPatch = PR_DIFF.slice(
 );
 const queuePatch = PR_DIFF.slice(PR_DIFF.indexOf("diff --git a/src/queue.ts"));
 
-async function setup(document: unknown = LOCAL_DOC) {
+async function setup(
+  document: unknown = LOCAL_DOC,
+  { holdAnswers = false }: { holdAnswers?: boolean } = {},
+) {
   const sent: unknown[] = [];
   // The walkthrough thread's event log. Sending a question "runs" a turn
-  // that answers it, the way BB records a real one.
+  // that answers it, the way BB records a real one. With `holdAnswers`, the
+  // turns stay open until `answerAll()`.
   const events: { seq: number; type: string; scope?: object; data?: object }[] =
     [];
   const record = (type: string, data: object, scope?: object) =>
@@ -48,6 +52,11 @@ async function setup(document: unknown = LOCAL_DOC) {
       data,
       ...(scope ? { scope } : {}),
     });
+  const held: (() => void)[] = [];
+  let eventsDown = false;
+  const answerAll = () => {
+    for (const answer of held.splice(0)) answer();
+  };
   const host = createFakePluginHost({
     pluginId: "walkthrough",
     sdk: {
@@ -64,12 +73,17 @@ async function setup(document: unknown = LOCAL_DOC) {
           const turn = { kind: "turn", turnId: `t${sent.length}` };
           record("client/turn/requested", { requestId, input: args.input });
           record("turn/input/accepted", { clientRequestId: requestId }, turn);
-          record(
-            "item/completed",
-            { item: { type: "agentMessage", text: `Answer ${sent.length}` } },
-            turn,
-          );
-          record("turn/completed", { status: "completed" }, turn);
+          const text = `Answer ${sent.length}`;
+          const answer = () => {
+            record(
+              "item/completed",
+              { item: { type: "agentMessage", text } },
+              turn,
+            );
+            record("turn/completed", { status: "completed" }, turn);
+          };
+          if (holdAnswers) held.push(answer);
+          else answer();
           return {} as never;
         },
         events: {
@@ -84,6 +98,7 @@ async function setup(document: unknown = LOCAL_DOC) {
             order?: string;
             types?: readonly string[];
           }) => {
+            if (eventsDown) throw new Error("Thread events are unavailable");
             if (Number(limit ?? 100) > 100)
               throw new Error("Thread event limit cannot exceed 100");
             const rows = events.filter(
@@ -161,7 +176,33 @@ async function setup(document: unknown = LOCAL_DOC) {
     host.harness.behavior.callRpc(method, input) as Promise<{
       comment: DraftComment;
     }>;
-  return { ...host, sent, get, mutate };
+  const setEventsDown = (down: boolean) => {
+    eventsDown = down;
+  };
+  return { ...host, sent, get, mutate, answerAll, setEventsDown };
+}
+
+async function submitWalkthrough(
+  harness: Awaited<ReturnType<typeof setup>>["harness"],
+): Promise<string> {
+  const out = await harness.behavior.runCli(
+    ["submit", "--file", "/tmp/w.json"],
+    { threadId: "thr_1" },
+  );
+  return /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
+}
+
+/** Polls until `done` holds, as the app's realtime refresh would. */
+async function eventually<T>(
+  read: () => Promise<T>,
+  done: (value: T) => boolean,
+): Promise<T> {
+  let value = await read();
+  for (let attempt = 0; attempt < 40 && !done(value); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    value = await read();
+  }
+  return value;
 }
 
 let dispose: (() => Promise<void>) | null = null;
@@ -484,5 +525,142 @@ describe("rewriting the review summary", () => {
       summary: "Draft summary.",
       previousSummary: null,
     });
+  });
+});
+
+describe("late and concurrent changes", () => {
+  const STOP_QUESTION = {
+    body: "Why a queue?",
+    target: { stopId: "c1s1", commentId: null, anchor: null },
+  };
+
+  /** Collects unhandled promise rejections while `run` executes. */
+  async function unhandledDuring(run: () => Promise<void>): Promise<unknown[]> {
+    const rejections: unknown[] = [];
+    const listener = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      await run();
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    return rejections;
+  }
+
+  /** Long enough for the answer poll to see an answer released just before. */
+  const nextPoll = () => new Promise((resolve) => setTimeout(resolve, 1800));
+
+  it("drops the answer to a conversation deleted while the agent answered", async () => {
+    const { harness, get, answerAll } = await setup(LOCAL_DOC, {
+      holdAnswers: true,
+    });
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    const { discussion } = (await harness.behavior.callRpc("ask", {
+      id,
+      ...STOP_QUESTION,
+    })) as { discussion: { id: string } };
+
+    const rejections = await unhandledDuring(async () => {
+      await harness.behavior.callRpc("deleteDiscussion", {
+        id,
+        discussionId: discussion.id,
+      });
+      answerAll();
+      await nextPoll();
+    });
+    expect(rejections).toEqual([]);
+    expect(
+      ((await get(id)) as unknown as { discussions: unknown[] }).discussions,
+    ).toEqual([]);
+  });
+
+  it("drops a summary rewrite whose walkthrough was deleted meanwhile", async () => {
+    const { harness, answerAll } = await setup(LOCAL_DOC, {
+      holdAnswers: true,
+    });
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    await harness.behavior.callRpc("rewriteSummary", { id });
+
+    const rejections = await unhandledDuring(async () => {
+      const deleted = await harness.behavior.runCli(["delete", id]);
+      expect(deleted.exitCode).toBe(0);
+      answerAll();
+      await nextPoll();
+    });
+    expect(rejections).toEqual([]);
+  });
+
+  it("takes one question at a time in a conversation", async () => {
+    const { harness, get, sent } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    const { discussion } = (await harness.behavior.callRpc("ask", {
+      id,
+      ...STOP_QUESTION,
+    })) as { discussion: { id: string } };
+    await eventually(
+      () => get(id) as Promise<{ discussions?: { waiting: unknown }[] }>,
+      (data) => data.discussions?.[0]?.waiting === null,
+    );
+
+    const reply = () =>
+      harness.behavior.callRpc("ask", {
+        id,
+        discussionId: discussion.id,
+        body: "And the retry limit?",
+      });
+    const results = await Promise.allSettled([reply(), reply()]);
+    expect(results.map((result) => result.status).sort()).toEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect(sent).toHaveLength(2);
+  });
+
+  it("rewrites the summary once when asked twice at once", async () => {
+    const { harness, sent } = await setup(LOCAL_DOC, { holdAnswers: true });
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    const rewrite = () => harness.behavior.callRpc("rewriteSummary", { id });
+    const results = await Promise.allSettled([rewrite(), rewrite()]);
+    expect(results.map((result) => result.status).sort()).toEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("sends feedback once when submitted twice at once", async () => {
+    const { harness, get, sent } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    const { comments } = await get(id);
+    await harness.behavior.callRpc("setCommentStatus", {
+      id,
+      commentId: comments[0]!.id,
+      status: "kept",
+    });
+    const submit = () => harness.behavior.callRpc("submit", { id });
+    const results = await Promise.allSettled([submit(), submit()]);
+    expect(results.map((result) => result.status).sort()).toEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("starts no conversation when the agent's thread cannot be read", async () => {
+    const { harness, get, setEventsDown } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    setEventsDown(true);
+    await expect(
+      harness.behavior.callRpc("ask", { id, ...STOP_QUESTION }),
+    ).rejects.toThrow();
+    expect(
+      ((await get(id)) as unknown as { discussions: unknown[] }).discussions,
+    ).toEqual([]);
   });
 });
