@@ -46,6 +46,10 @@ import {
 } from "./src/agent";
 import { buildQuestionPrompt, buildSummaryPrompt } from "./src/conversation";
 import {
+  DEFAULT_REVIEW_INSTRUCTIONS,
+  buildReviewPrompt,
+} from "./src/review-prompt";
+import {
   WALKTHROUGH_CHANGED,
   WALKTHROUGH_READY,
   allStops,
@@ -246,10 +250,6 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true) }),
   },
 });
-
-const DEFAULT_REVIEW_INSTRUCTIONS =
-  "Review it with the /code-review skill if you have it (without --comment or --fix), " +
-  "then turn the findings that hold up into draft comments.";
 
 /** How many walkthroughs the Reviews page and `bb walkthrough list` show. */
 const RECENT_LIMIT = 50;
@@ -518,14 +518,15 @@ export default async function plugin(bb: BbPluginApi) {
             baseBranch: { kind: "default" },
           },
         },
+        // Pinned rather than inherited: a project that remembers `full` would
+        // otherwise review someone else's code with no sandbox at all.
+        permissionMode: "auto",
         title: `Review ${repo}#${number}`,
-        prompt: [
-          `Review pull request https://github.com/${repo}/pull/${number} and hand me a walkthrough with draft comments.`,
-          "",
-          "Use the walkthrough skill. Check out the PR in this worktree with `gh pr checkout` so you can read the surrounding code.",
-          reviewInstructions.trim() || DEFAULT_REVIEW_INSTRUCTIONS,
-          "Never post, approve, or request changes on GitHub yourself; I publish from the walkthrough.",
-        ].join("\n"),
+        prompt: buildReviewPrompt({
+          repo,
+          number,
+          instructions: reviewInstructions,
+        }),
         pluginMetadata: { pr: `${repo}#${number}` },
       });
       return { threadId: thread.id };

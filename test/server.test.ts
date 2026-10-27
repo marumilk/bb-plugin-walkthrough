@@ -45,6 +45,7 @@ const SECRET_FILE = "ghp_SECRETTOKEN0123456789 and the rest of a credential";
 
 async function setup({ holdAnswers = false }: { holdAnswers?: boolean } = {}) {
   const sent: unknown[] = [];
+  const spawned: { permissionMode?: string; prompt?: string }[] = [];
   const fileReads: string[] = [];
   // The walkthrough thread's event log. Sending a question "runs" a turn
   // that answers it, the way BB records a real one. With `holdAnswers`, the
@@ -73,6 +74,10 @@ async function setup({ holdAnswers = false }: { holdAnswers?: boolean } = {}) {
             projectId: "proj_1",
             environmentId: "env_1",
           }),
+        spawn: async (args: { permissionMode?: string; prompt?: string }) => {
+          spawned.push(args);
+          return makeThreadResponse({ id: "thr_review", projectId: "proj_1" });
+        },
         send: async (args: { input: unknown }) => {
           sent.push(args);
           const requestId = `req_${sent.length}`;
@@ -117,6 +122,10 @@ async function setup({ holdAnswers = false }: { holdAnswers?: boolean } = {}) {
         },
       },
       projects: {
+        list: async () =>
+          [
+            { id: "proj_1", gitRemoteUrl: "git@github.com:acme/app.git" },
+          ] as never,
         get: async () =>
           ({
             id: "proj_1",
@@ -187,7 +196,16 @@ async function setup({ holdAnswers = false }: { holdAnswers?: boolean } = {}) {
   const setEventsDown = (down: boolean) => {
     eventsDown = down;
   };
-  return { ...host, sent, get, mutate, answerAll, setEventsDown, fileReads };
+  return {
+    ...host,
+    sent,
+    spawned,
+    get,
+    mutate,
+    answerAll,
+    setEventsDown,
+    fileReads,
+  };
 }
 
 async function submitWalkthrough(
@@ -708,5 +726,19 @@ describe("what an agent can reach through the CLI", () => {
     expect(own.exitCode).toBe(0);
     const terminal = await harness.behavior.runCli(["list"]);
     expect(terminal.stdout).toContain(id);
+  });
+});
+
+describe("review threads from the Reviews page", () => {
+  it("start sandboxed, with the pull request treated as untrusted", async () => {
+    const { harness, spawned } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    await expect(
+      harness.behavior.callRpc("startReview", { repo: "acme/app", number: 42 }),
+    ).resolves.toEqual({ threadId: "thr_review" });
+    expect(spawned).toHaveLength(1);
+    // Pinned, so a project that remembers `full` never reviews unsandboxed.
+    expect(spawned[0]!.permissionMode).toBe("auto");
+    expect(spawned[0]!.prompt).toMatch(/never run it/);
   });
 });
