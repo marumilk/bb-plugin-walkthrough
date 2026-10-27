@@ -4,6 +4,7 @@ import {
   buildReviewPayload,
   formatLocalFeedback,
   reviewBlockers,
+  summaryBasis,
 } from "../src/submission";
 
 function comment(overrides: Partial<DraftComment>): DraftComment {
@@ -117,6 +118,19 @@ describe("formatLocalFeedback", () => {
         "Overall:",
         "Mostly fine.",
       ].join("\n"),
+    );
+  });
+});
+
+describe("summaryBasis", () => {
+  it("changes when kept comments or their wording change, not their order", () => {
+    const a = comment({ id: "a", body: "One" });
+    const b = comment({ id: "b", line: 20, body: "Two" });
+    expect(summaryBasis([a, b])).toBe(summaryBasis([b, a]));
+    expect(summaryBasis([a, b])).not.toBe(summaryBasis([a]));
+    expect(summaryBasis([a])).not.toBe(summaryBasis([{ ...a, body: "One!" }]));
+    expect(summaryBasis([a])).toBe(
+      summaryBasis([a, comment({ id: "c", status: "discarded" })]),
     );
   });
 });

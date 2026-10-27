@@ -37,6 +37,17 @@ const queuePatch = PR_DIFF.slice(PR_DIFF.indexOf("diff --git a/src/queue.ts"));
 
 async function setup(document: unknown = LOCAL_DOC) {
   const sent: unknown[] = [];
+  // The walkthrough thread's event log. Sending a question "runs" a turn
+  // that answers it, the way BB records a real one.
+  const events: { seq: number; type: string; scope?: object; data?: object }[] =
+    [];
+  const record = (type: string, data: object, scope?: object) =>
+    events.push({
+      seq: events.length + 1,
+      type,
+      data,
+      ...(scope ? { scope } : {}),
+    });
   const host = createFakePluginHost({
     pluginId: "walkthrough",
     sdk: {
@@ -47,9 +58,41 @@ async function setup(document: unknown = LOCAL_DOC) {
             projectId: "proj_1",
             environmentId: "env_1",
           }),
-        send: async (args: unknown) => {
+        send: async (args: { input: unknown }) => {
           sent.push(args);
+          const requestId = `req_${sent.length}`;
+          const turn = { kind: "turn", turnId: `t${sent.length}` };
+          record("client/turn/requested", { requestId, input: args.input });
+          record("turn/input/accepted", { clientRequestId: requestId }, turn);
+          record(
+            "item/completed",
+            { item: { type: "agentMessage", text: `Answer ${sent.length}` } },
+            turn,
+          );
+          record("turn/completed", { status: "completed" }, turn);
           return {} as never;
+        },
+        events: {
+          list: async ({
+            afterSeq,
+            limit,
+            order,
+            types,
+          }: {
+            afterSeq?: string;
+            limit?: string;
+            order?: string;
+            types?: readonly string[];
+          }) => {
+            if (Number(limit ?? 100) > 100)
+              throw new Error("Thread event limit cannot exceed 100");
+            const rows = events.filter(
+              (row) =>
+                row.seq > Number(afterSeq ?? 0) &&
+                (!types || types.includes(row.type)),
+            );
+            return (order === "desc" ? rows.reverse() : rows) as never;
+          },
         },
       },
       projects: {
@@ -271,5 +314,175 @@ describe("reviewing a local walkthrough", () => {
         commentId: comments[0]!.id,
       }),
     ).rejects.toThrow(/discard a draft instead/);
+  });
+});
+
+describe("private conversations with the agent", () => {
+  it("asks the walkthrough's thread and records its answer, never as a comment", async () => {
+    const { harness, get, sent } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const out = await harness.behavior.runCli(
+      ["submit", "--file", "/tmp/w.json"],
+      { threadId: "thr_1" },
+    );
+    const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
+    const { comments } = await get(id);
+
+    const asked = (await harness.behavior.callRpc("ask", {
+      id,
+      body: "Is five retries enough?",
+      target: {
+        stopId: "c1s1",
+        commentId: comments[0]!.id,
+        anchor: {
+          path: "src/deliver.ts",
+          side: "RIGHT",
+          line: 15,
+          startLine: 13,
+        },
+      },
+    })) as { discussion: { id: string; waiting: unknown } };
+    expect(asked.discussion.waiting).not.toBeNull();
+
+    const message = sent[0] as {
+      threadId: string;
+      mode: string;
+      input: { text: string; visibility?: string }[];
+    };
+    expect(message).toMatchObject({
+      threadId: "thr_1",
+      mode: "queue-if-active",
+    });
+    expect(message.input[0]).toMatchObject({
+      text: "Walkthrough question about `src/deliver.ts` lines 13-15: Is five retries enough?",
+    });
+    expect(message.input[1]!.visibility).toBe("agent-only");
+
+    let discussion;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const result = (await harness.behavior.callRpc("get", { id })) as {
+        discussions: {
+          waiting: unknown;
+          messages: { author: string; body: string }[];
+        }[];
+      };
+      discussion = result.discussions[0]!;
+      if (discussion.waiting === null) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(discussion!.messages.map((m) => [m.author, m.body])).toEqual([
+      ["you", "Is five retries enough?"],
+      ["agent", "Answer 1"],
+    ]);
+
+    // Conversations never reach the review: only comments do.
+    expect((await get(id)).comments).toHaveLength(1);
+  });
+
+  it("refuses an anchor outside the diff", async () => {
+    const { harness } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const out = await harness.behavior.runCli(
+      ["submit", "--file", "/tmp/w.json"],
+      { threadId: "thr_1" },
+    );
+    const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
+    await expect(
+      harness.behavior.callRpc("ask", {
+        id,
+        body: "?",
+        target: {
+          stopId: "c1s1",
+          commentId: null,
+          anchor: {
+            path: "src/deliver.ts",
+            side: "RIGHT",
+            line: 30,
+            startLine: null,
+          },
+        },
+      }),
+    ).rejects.toThrow(/not in this walkthrough's diff/);
+  });
+});
+
+describe("viewed files", () => {
+  it("records Viewed per file within a stop", async () => {
+    const { harness, get } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const out = await harness.behavior.runCli(
+      ["submit", "--file", "/tmp/w.json"],
+      { threadId: "thr_1" },
+    );
+    const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
+    await harness.behavior.callRpc("setViewed", {
+      id,
+      stopId: "c1s1",
+      path: "src/deliver.ts",
+      viewed: true,
+    });
+    await harness.behavior.callRpc("setViewed", {
+      id,
+      stopId: "rest1",
+      path: "src/queue.ts",
+      viewed: true,
+    });
+    await harness.behavior.callRpc("setViewed", {
+      id,
+      stopId: "rest1",
+      path: "src/queue.ts",
+      viewed: false,
+    });
+    expect((await get(id)).walkthrough.viewed).toEqual([
+      "c1s1\u0000src/deliver.ts",
+    ]);
+  });
+});
+
+describe("rewriting the review summary", () => {
+  it("asks the agent, puts its summary in place, and can undo", async () => {
+    const { harness, get, sent } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const out = await harness.behavior.runCli(
+      ["submit", "--file", "/tmp/w.json"],
+      { threadId: "thr_1" },
+    );
+    const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
+    const { comments } = await get(id);
+    await harness.behavior.callRpc("setCommentStatus", {
+      id,
+      commentId: comments[0]!.id,
+      status: "kept",
+    });
+    await harness.behavior.callRpc("setReview", {
+      id,
+      summary: "Draft summary.",
+      verdict: "COMMENT",
+    });
+
+    await harness.behavior.callRpc("rewriteSummary", { id });
+    const message = sent.at(-1) as { input: { text: string }[] };
+    expect(message.input[0]!.text).toBe(
+      "Walkthrough: rewrite the review summary from the 1 kept comment.",
+    );
+
+    let walkthrough;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      walkthrough = (await get(id)).walkthrough;
+      if (!walkthrough.summaryJob) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(walkthrough).toMatchObject({
+      summary: "Answer 1",
+      previousSummary: "Draft summary.",
+      summaryError: null,
+    });
+    expect(walkthrough!.summaryBasis).toBeTruthy();
+
+    await harness.behavior.callRpc("undoSummaryRewrite", { id });
+    expect((await get(id)).walkthrough).toMatchObject({
+      summary: "Draft summary.",
+      previousSummary: null,
+    });
   });
 });

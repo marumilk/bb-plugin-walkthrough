@@ -54,12 +54,20 @@ Use a file-writing tool or a quoted heredoc (`<<'EOF'`).
   "chapters": [
     {
       "title": "Delivery",
+      "icon": "api",
       "blurb": "How a failed delivery is queued and retried.",
       "stops": [
         {
           "title": "Queue failed deliveries",
           "prose": "`deliver` now catches transport errors and enqueues a retry with backoff instead of dropping the event.",
-          "hunks": ["src/webhooks/deliver.ts:h1", "src/webhooks/queue.ts:h1"]
+          "hunks": ["src/webhooks/deliver.ts:h1", "src/webhooks/queue.ts:h1"],
+          "priority": "critical",
+          "notes": [
+            {
+              "hunk": "src/webhooks/queue.ts:h1",
+              "body": "The queue is in memory, so pending retries are lost on deploy."
+            }
+          ]
         }
       ]
     }
@@ -84,10 +92,17 @@ Use a file-writing tool or a quoted heredoc (`<<'EOF'`).
 ### Shape
 
 - `chapters`: 1-8 conceptual groups in reading order, not one per file. `title` is 1-2 words.
+  Give each chapter an `icon` for the timeline: `ui`, `components`, `styles`, `logic`, `types`, `api`, `data`, `tests`, `docs`, `config`, `build`, `deps`, `i18n`, `security`, `performance`, `bug`, `refactor`, `cli`, `icons`, or `other`.
+  Without one, an icon is guessed from the title.
 - `stops`: one review idea each, with a semantic title (never a file path), short `prose`, and 1-20 `hunks` in the order to read them.
   Prefer few stops: 1-2 for a tiny change, 3-5 for a focused one, at most 14 per chapter.
   Order stops by review leverage, not by file path.
   Group hunks that only make sense together; a stop must not depend on code shown in another stop.
+- `priority` is `review` (the default) or `critical`.
+  Mark a stop `critical` only when it holds the change's main risk or logic the reviewer must read closely; most stops are `review`.
+- `notes` are optional asides shown as a quote just above the file holding `hunk` (one of the stop's own hunks).
+  Use them sparingly, for something the reader needs at that exact point, such as a non-obvious invariant or why one file changes with another.
+  Most stops need none.
 - Each hunk id may appear in one stop at most.
   Hunks you leave out (lockfiles, snapshots, generated code, mechanical edits) are gathered into a final "Other changes" chapter automatically.
 - `prose`, `blurb`, `focus`, and comment `body` are Markdown; keep them short and concrete.
@@ -116,6 +131,16 @@ If it fails, fix the listed problems and run it again; nothing opens until it pa
 On success it opens the tab beside this thread and prints a line like `::walkthrough{id="wt_…"}`.
 End your reply with that line on its own so the user gets an Open card in the chat.
 Keep the rest of the reply to a sentence or two; the walkthrough carries the detail.
+
+## Questions from the walkthrough
+
+While reviewing, the user can ask you about specific lines privately.
+Such a question arrives in this thread as "Walkthrough question about …", with the code and context attached.
+Answer it directly in a short Markdown reply: your reply is shown inline beside that code.
+These conversations are private and never posted; do not edit files, post, or resubmit the walkthrough unless the question asks you to.
+
+On the Finish step the user can also ask you to rewrite the review summary ("Walkthrough: rewrite the review summary from the N kept comments").
+Reply with the summary text alone; it replaces the summary box, and the user can undo it.
 
 ## After the user publishes
 

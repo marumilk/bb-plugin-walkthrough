@@ -40,78 +40,147 @@ function editorKeys(onSave: () => void, onCancel: () => void) {
   };
 }
 
-function CommentEditor({
+export interface EditorAction {
+  label: string;
+  icon?: string;
+  variant?: "default" | "outline";
+  run: (body: string) => Promise<void>;
+}
+
+/**
+ * A comment box. ⌘/Ctrl+Enter runs the last action; with `reset`, the box
+ * empties after an action succeeds, for reply fields that stay open.
+ */
+export function CommentEditor({
   initial,
-  saveLabel,
-  onSave,
+  actions,
   onCancel,
+  placeholder,
+  reset = false,
+  autoFocus = true,
+  label = "Comment",
 }: {
   initial: string;
-  saveLabel: string;
-  onSave: (body: string) => Promise<void>;
-  onCancel: () => void;
+  actions: readonly EditorAction[];
+  onCancel?: () => void;
+  placeholder?: string;
+  reset?: boolean;
+  autoFocus?: boolean;
+  label?: string;
 }) {
   const [body, setBody] = useState(initial);
   const [saving, setSaving] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const textarea = ref.current;
-    if (textarea === null) return;
+    if (textarea === null || !autoFocus) return;
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  }, []);
-  const save = () => {
-    if (body.trim() === "" || saving) return;
+  }, [autoFocus]);
+  const run = (action: EditorAction | undefined) => {
+    if (action === undefined || body.trim() === "" || saving) return;
     setSaving(true);
-    onSave(body).finally(() => setSaving(false));
+    action
+      .run(body)
+      .then(() => {
+        if (reset) setBody("");
+      })
+      .catch(() => {})
+      .finally(() => setSaving(false));
   };
+  const cancel = onCancel ?? (() => setBody(""));
   return (
     <div className="space-y-2">
       <Textarea
         ref={ref}
         value={body}
+        placeholder={placeholder}
         onChange={(event) => setBody(event.target.value)}
-        onKeyDown={editorKeys(save, onCancel)}
-        rows={Math.min(12, Math.max(3, body.split("\n").length + 1))}
-        aria-label="Comment"
+        onKeyDown={editorKeys(() => run(actions.at(-1)), cancel)}
+        rows={Math.min(
+          12,
+          Math.max(reset ? 2 : 3, body.split("\n").length + 1),
+        )}
+        aria-label={label}
         className="font-sans text-sm"
       />
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button
-          size="sm"
-          onClick={save}
-          disabled={saving || body.trim() === ""}
-        >
-          {saveLabel}
-        </Button>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {onCancel ? (
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        ) : null}
+        {actions.map((action, index) => (
+          <Button
+            key={action.label}
+            size="sm"
+            variant={
+              action.variant ??
+              (index === actions.length - 1 ? "default" : "outline")
+            }
+            onClick={() => run(action)}
+            disabled={saving || body.trim() === ""}
+          >
+            {action.icon ? (
+              <Icon name={action.icon} aria-hidden="true" />
+            ) : null}
+            {action.label}
+          </Button>
+        ))}
       </div>
     </div>
   );
 }
 
+/**
+ * The box the diff gutter opens. A reviewer can turn what they wrote into a
+ * review comment, or ask the agent about those lines privately.
+ */
 export function NewCommentCard({
   label,
-  onSave,
+  askOnly,
+  onComment,
+  onAsk,
   onCancel,
 }: {
   label: string;
-  onSave: (body: string) => Promise<void>;
+  /** Only asking is possible, e.g. after the review is posted. */
+  askOnly: boolean;
+  onComment: (body: string) => Promise<void>;
+  onAsk: (body: string) => Promise<void>;
   onCancel: () => void;
 }) {
+  const ask: EditorAction = {
+    label: "Ask agent",
+    icon: "MessageQuestion",
+    variant: "outline",
+    run: onAsk,
+  };
   return (
     <div className="mx-3 my-2 rounded-lg border border-border bg-card p-3 font-sans shadow-xs">
       <p className="mb-2 text-xs text-muted-foreground">
-        New comment · {label}
+        {label} ·{" "}
+        {askOnly
+          ? "Ask the agent privately"
+          : "Add a review comment, or ask the agent privately"}
       </p>
       <CommentEditor
         initial=""
-        saveLabel="Add comment"
-        onSave={onSave}
+        placeholder={
+          askOnly ? "Ask about these lines…" : "Write a comment or a question…"
+        }
+        actions={
+          askOnly
+            ? [{ ...ask, variant: "default" }]
+            : [ask, { label: "Add comment", run: onComment }]
+        }
         onCancel={onCancel}
       />
+      {askOnly ? null : (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Questions to the agent stay private and are never posted.
+        </p>
+      )}
     </div>
   );
 }
@@ -126,12 +195,15 @@ export function CommentCard({
   rpc,
   readOnly,
   onChanged,
+  onAsk,
 }: {
   comment: DraftComment;
   walkthroughId: string;
   rpc: Rpc;
   readOnly: boolean;
   onChanged: (comment: DraftComment | null) => void;
+  /** Opens a private conversation with the agent about this comment. */
+  onAsk: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -244,8 +316,12 @@ export function CommentCard({
       {editing ? (
         <CommentEditor
           initial={comment.body}
-          saveLabel={comment.status === "pending" ? "Save and keep" : "Save"}
-          onSave={saveEdit}
+          actions={[
+            {
+              label: comment.status === "pending" ? "Save and keep" : "Save",
+              run: saveEdit,
+            },
+          ]}
           onCancel={() => setEditing(false)}
         />
       ) : (
@@ -255,7 +331,11 @@ export function CommentCard({
         />
       )}
 
-      {readOnly || editing ? null : (
+      {editing ? null : readOnly ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <AskButton onAsk={onAsk} />
+        </div>
+      ) : (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {comment.status === "pending" ? (
             <>
@@ -337,8 +417,23 @@ export function CommentCard({
               ) : null}
             </>
           )}
+          <AskButton onAsk={onAsk} />
         </div>
       )}
     </div>
+  );
+}
+
+function AskButton({ onAsk }: { onAsk: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="ml-auto h-7 text-muted-foreground"
+      onClick={onAsk}
+    >
+      <Icon name="MessageQuestion" aria-hidden="true" />
+      Ask agent
+    </Button>
   );
 }

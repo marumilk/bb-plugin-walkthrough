@@ -70,6 +70,7 @@ export async function snapshotTarget(
         title: info.title,
         author: info.author,
         headSha: info.headSha,
+        body: info.body,
       },
       files: parseUnifiedDiff(patch),
     };

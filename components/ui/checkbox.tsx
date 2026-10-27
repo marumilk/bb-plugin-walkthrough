@@ -20,7 +20,8 @@ const Checkbox = React.forwardRef<
     <CheckboxPrimitive.Indicator
       className={cn("flex items-center justify-center text-current")}
     >
-      <Icon name="Check" className="size-3.5" />
+      {/* Inline so the tick takes the box's foreground over host icon tints. */}
+      <Icon name="Check" className="size-3.5" style={{ color: "inherit" }} />
     </CheckboxPrimitive.Indicator>
   </CheckboxPrimitive.Root>
 ));

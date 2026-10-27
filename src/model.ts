@@ -18,6 +18,8 @@ export type Target =
       title: string;
       author: string;
       headSha: string;
+      /** The PR description at snapshot time. Absent on older records. */
+      body?: string;
     }
   | {
       kind: "local";
@@ -46,6 +48,20 @@ export interface Walkthrough {
   submittedAt: number | null;
   submittedUrl: string | null;
   currentStopId: string | null;
+  /** Files marked Viewed, as `viewedKey` values. Absent on older records. */
+  viewed?: string[];
+  /** The agent is rewriting the summary; same resumable shape as a question. */
+  summaryJob?: { messageId: string; afterSeq: string; visible: string } | null;
+  summaryError?: string | null;
+  /** The summary before the agent's last rewrite, for Undo. */
+  previousSummary?: string | null;
+  /** `summaryBasis` of the comments the current summary was written from. */
+  summaryBasis?: string | null;
+}
+
+/** Viewed is per file within a stop: a file can be split across stops. */
+export function viewedKey(stopId: string, path: string): string {
+  return `${stopId}\u0000${path}`;
 }
 
 export type CommentStatus = "pending" | "kept" | "discarded";
@@ -98,4 +114,44 @@ export function describeTarget(target: Target): string {
   return target.kind === "pr"
     ? `${target.repo}#${target.number}`
     : target.label;
+}
+
+/** Where a conversation sits: a line range, or a whole stop when null. */
+export interface DiscussionAnchor {
+  path: string;
+  side: Side;
+  line: number;
+  startLine: number | null;
+  hunkId: string;
+}
+
+export interface DiscussionMessage {
+  id: string;
+  author: "you" | "agent";
+  body: string;
+  at: number;
+}
+
+/**
+ * A private conversation between the reviewer and the agent, shown inline.
+ * It is never posted to GitHub or sent as review feedback.
+ */
+export interface Discussion {
+  id: string;
+  walkthroughId: string;
+  stopId: string;
+  anchor: DiscussionAnchor | null;
+  /** The draft or reviewer comment this conversation is about, if any. */
+  commentId: string | null;
+  messages: DiscussionMessage[];
+  /**
+   * The question the agent is answering. `afterSeq` is the thread event
+   * cursor from just before it was sent, so a reloaded plugin can resume
+   * waiting for the answer.
+   */
+  waiting: { messageId: string; afterSeq: string; visible?: string } | null;
+  error: string | null;
+  resolved: boolean;
+  createdAt: number;
+  updatedAt: number;
 }

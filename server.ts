@@ -6,6 +6,7 @@
 // a guided, stop-by-stop review in a thread tab where the reviewer keeps,
 // edits, or discards each draft comment, then posts one GitHub review (pull
 // requests) or sends the feedback back to the agent (local changes).
+import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import {
   PluginCliError,
@@ -26,13 +27,24 @@ import {
 import {
   GhError,
   fetchPr,
+  fetchPrDescription,
+  compareCommits,
   listReviewRequests,
   repoFromRemote,
   submitReview,
 } from "./src/github";
 import {
+  AgentAnswerError,
+  awaitAnswer,
+  latestSeq,
+  sendQuestion,
+} from "./src/agent";
+import { buildQuestionPrompt, buildSummaryPrompt } from "./src/conversation";
+import {
   countComments,
   describeTarget,
+  viewedKey,
+  type Discussion,
   type DraftComment,
   type Walkthrough,
   type WalkthroughSummary,
@@ -41,7 +53,9 @@ import { createStore, NotFoundError } from "./src/store";
 import {
   buildReviewPayload,
   formatLocalFeedback,
+  keptComments,
   reviewBlockers,
+  summaryBasis,
 } from "./src/submission";
 import { snapshotTarget, threadContext } from "./src/targets";
 
@@ -70,6 +84,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       walkthrough: z.custom<Walkthrough>(),
       comments: z.array(z.custom<DraftComment>()),
+      discussions: z.array(z.custom<Discussion>()),
     }),
   },
   latestForThread: {
@@ -140,17 +155,89 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.literal(true) }),
   },
+  setViewed: {
+    input: z
+      .object({
+        id: z.string(),
+        stopId: z.string(),
+        path: z.string(),
+        viewed: z.boolean(),
+      })
+      .strict(),
+    output: z.object({ viewed: z.array(z.string()) }),
+  },
   setProgress: {
     input: z.object({ id: z.string(), stopId: z.string().max(40) }).strict(),
     output: z.object({ ok: z.literal(true) }),
   },
   headStatus: {
     input: walkthroughId,
-    output: z.object({ moved: z.boolean() }),
+    output: z.object({
+      moved: z.boolean(),
+      /** Commits the PR gained since the snapshot; null for local changes. */
+      behindBy: z.number().int().nullable(),
+      /** The branch was rewritten (force-pushed) since the snapshot. */
+      diverged: z.boolean(),
+    }),
   },
   submit: {
     input: walkthroughId,
     output: z.object({ url: z.string().nullable() }),
+  },
+
+  // Private conversations with the agent. Never posted or sent as feedback.
+  ask: {
+    input: z
+      .object({
+        id: z.string(),
+        body: z.string().trim().min(1).max(20000),
+        /** Continue this conversation, or start one at `target`. */
+        discussionId: z.string().optional(),
+        target: z
+          .object({
+            stopId: z.string(),
+            commentId: z.string().nullable(),
+            anchor: z
+              .object({
+                path: z.string().min(1),
+                side: z.enum(["LEFT", "RIGHT"]),
+                line: z.number().int().positive(),
+                startLine: z.number().int().positive().nullable(),
+              })
+              .strict()
+              .nullable(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict(),
+    output: z.object({ discussion: z.custom<Discussion>() }),
+  },
+  prDescription: {
+    input: walkthroughId,
+    output: z.object({ body: z.string().nullable() }),
+  },
+  rewriteSummary: {
+    input: walkthroughId,
+    output: z.object({ ok: z.literal(true) }),
+  },
+  undoSummaryRewrite: {
+    input: walkthroughId,
+    output: z.object({ ok: z.literal(true) }),
+  },
+  resolveDiscussion: {
+    input: z
+      .object({
+        id: z.string(),
+        discussionId: z.string(),
+        resolved: z.boolean(),
+      })
+      .strict(),
+    output: z.object({ discussion: z.custom<Discussion>() }),
+  },
+  deleteDiscussion: {
+    input: z.object({ id: z.string(), discussionId: z.string() }).strict(),
+    output: z.object({ ok: z.literal(true) }),
   },
 });
 
@@ -190,6 +277,100 @@ export default async function plugin(bb: BbPluginApi) {
     return walkthrough;
   };
 
+  // ── Conversations with the agent ──────────────────────────────────────
+  const conversations = new AbortController();
+  bb.onDispose(() => conversations.abort());
+
+  /** Waits for the agent's answer and records it, or the failure. */
+  const collectAnswer = (walkthrough: Walkthrough, discussion: Discussion) => {
+    const waiting = discussion.waiting;
+    if (waiting === null) return;
+    void awaitAnswer(bb, {
+      threadId: walkthrough.threadId,
+      messageId: waiting.messageId,
+      afterSeq: waiting.afterSeq,
+      ...(waiting.visible !== undefined ? { visible: waiting.visible } : {}),
+      signal: conversations.signal,
+    }).then(
+      (answer) => {
+        store.updateDiscussion(walkthrough.id, discussion.id, (draft) => {
+          draft.messages.push({
+            id: newMessageId(),
+            author: "agent",
+            body: answer,
+            at: Date.now(),
+          });
+          draft.waiting = null;
+          draft.error = null;
+        });
+        changed(walkthrough);
+      },
+      (error: unknown) => {
+        // A reload aborts the wait; the next load resumes it from the cursor.
+        if (conversations.signal.aborted) return;
+        bb.log.warn(`conversation ${discussion.id}: ${String(error)}`);
+        store.updateDiscussion(walkthrough.id, discussion.id, (draft) => {
+          draft.waiting = null;
+          draft.error =
+            error instanceof AgentAnswerError
+              ? error.message
+              : "Could not get the agent's answer.";
+        });
+        changed(walkthrough);
+      },
+    );
+  };
+
+  /** Waits for the agent's rewritten summary and puts it in place. */
+  const collectSummary = (walkthrough: Walkthrough) => {
+    const job = walkthrough.summaryJob;
+    if (!job) return;
+    void awaitAnswer(bb, {
+      threadId: walkthrough.threadId,
+      messageId: job.messageId,
+      afterSeq: job.afterSeq,
+      visible: job.visible,
+      signal: conversations.signal,
+    }).then(
+      (answer) => {
+        const updated = store.update(walkthrough.id, (draft) => {
+          draft.previousSummary = draft.summary;
+          draft.summary = answer;
+          draft.summaryBasis = summaryBasis(store.get(walkthrough.id).comments);
+          draft.summaryJob = null;
+          draft.summaryError = null;
+        });
+        changed(updated);
+      },
+      (error: unknown) => {
+        if (conversations.signal.aborted) return;
+        bb.log.warn(`summary ${walkthrough.id}: ${String(error)}`);
+        const updated = store.update(walkthrough.id, (draft) => {
+          draft.summaryJob = null;
+          draft.summaryError =
+            error instanceof AgentAnswerError
+              ? error.message
+              : "Could not get the agent's summary.";
+        });
+        changed(updated);
+      },
+    );
+  };
+
+  for (const walkthrough of store.rewritingSummaries())
+    collectSummary(walkthrough);
+
+  for (const discussion of store.waitingDiscussions()) {
+    try {
+      collectAnswer(
+        store.get(discussion.walkthroughId).walkthrough,
+        discussion,
+      );
+    } catch {
+      // Its walkthrough was deleted; nothing to resume.
+    }
+  }
+
   const projectForRepo = async (repo: string) => {
     const projects = await bb.sdk.projects.list();
     return projects.find(
@@ -201,7 +382,148 @@ export default async function plugin(bb: BbPluginApi) {
 
   // ── RPC (the app) ─────────────────────────────────────────────────────
   bb.rpc.register(rpcContract, {
-    get: ({ id }) => store.get(id),
+    get: ({ id }) => ({ ...store.get(id), discussions: store.discussions(id) }),
+
+    ask: async ({ id, body, discussionId, target }) => {
+      const { walkthrough, comments } = store.get(id);
+      const message = {
+        id: newMessageId(),
+        author: "you" as const,
+        body,
+        at: Date.now(),
+      };
+      let discussion: Discussion;
+      if (discussionId !== undefined) {
+        const existing = store.getDiscussion(id, discussionId);
+        if (existing.waiting !== null) {
+          throw new Error("The agent is still answering the last question.");
+        }
+        discussion = existing;
+      } else if (target !== undefined) {
+        discussion = store.createDiscussion({
+          walkthroughId: id,
+          stopId: target.stopId,
+          anchor: resolveAnchor(walkthrough, target.anchor),
+          commentId: target.commentId,
+          messages: [],
+          waiting: null,
+          error: null,
+          resolved: false,
+        });
+      } else {
+        throw new Error(
+          "Pass a conversation to continue or a place to start one.",
+        );
+      }
+      const comment =
+        comments.find((candidate) => candidate.id === discussion.commentId) ??
+        null;
+      const prompt = buildQuestionPrompt({
+        walkthrough,
+        discussion: {
+          ...discussion,
+          messages: [...discussion.messages, message],
+        },
+        comment,
+        messageId: message.id,
+      });
+      const afterSeq = await latestSeq(bb, walkthrough.threadId);
+      discussion = store.updateDiscussion(id, discussion.id, (draft) => {
+        draft.messages.push(message);
+        draft.waiting = {
+          messageId: message.id,
+          afterSeq,
+          visible: prompt.visible,
+        };
+        draft.error = null;
+        draft.resolved = false;
+      });
+      try {
+        await sendQuestion(bb, walkthrough.threadId, prompt);
+      } catch (error) {
+        store.updateDiscussion(id, discussion.id, (draft) => {
+          draft.waiting = null;
+          draft.error = "Could not reach the agent's thread.";
+        });
+        changed(walkthrough);
+        throw error;
+      }
+      collectAnswer(walkthrough, discussion);
+      changed(walkthrough);
+      return { discussion };
+    },
+
+    prDescription: async ({ id }) => {
+      const { walkthrough } = store.get(id);
+      if (walkthrough.target.kind !== "pr") return { body: null };
+      const ref = {
+        repo: walkthrough.target.repo,
+        number: walkthrough.target.number,
+      };
+      try {
+        return { body: await fetchPrDescription(ref) };
+      } catch {
+        // Offline or signed out: fall back to the copy taken at submission.
+        return { body: walkthrough.target.body ?? null };
+      }
+    },
+
+    rewriteSummary: async ({ id }) => {
+      const walkthrough = openWalkthrough(id);
+      if (walkthrough.summaryJob)
+        throw new Error("The agent is already rewriting the summary.");
+      const kept = keptComments(store.get(id).comments);
+      const messageId = newMessageId();
+      const prompt = buildSummaryPrompt({ walkthrough, kept, messageId });
+      const afterSeq = await latestSeq(bb, walkthrough.threadId);
+      const job = { messageId, afterSeq, visible: prompt.visible };
+      store.update(id, (draft) => {
+        draft.summaryJob = job;
+        draft.summaryError = null;
+      });
+      try {
+        await sendQuestion(bb, walkthrough.threadId, prompt);
+      } catch (error) {
+        changed(
+          store.update(id, (draft) => {
+            draft.summaryJob = null;
+            draft.summaryError = "Could not reach the agent's thread.";
+          }),
+        );
+        throw error;
+      }
+      collectSummary({ ...walkthrough, summaryJob: job });
+      changed(walkthrough);
+      return { ok: true as const };
+    },
+
+    undoSummaryRewrite: ({ id }) => {
+      openWalkthrough(id);
+      const updated = store.update(id, (draft) => {
+        if (draft.previousSummary == null) return;
+        draft.summary = draft.previousSummary;
+        draft.previousSummary = null;
+        draft.summaryBasis = null;
+      });
+      changed(updated);
+      return { ok: true as const };
+    },
+
+    resolveDiscussion: ({ id, discussionId, resolved }) => {
+      const { walkthrough } = store.get(id);
+      const discussion = store.updateDiscussion(id, discussionId, (draft) => {
+        draft.resolved = resolved;
+      });
+      changed(walkthrough);
+      return { discussion };
+    },
+
+    deleteDiscussion: ({ id, discussionId }) => {
+      const { walkthrough } = store.get(id);
+      store.deleteDiscussion(id, discussionId);
+      changed(walkthrough);
+      return { ok: true as const };
+    },
     latestForThread: ({ threadId }) => ({
       summary: store.latestForThread(threadId),
     }),
@@ -336,11 +658,23 @@ export default async function plugin(bb: BbPluginApi) {
     setReview: ({ id, summary, verdict }) => {
       openWalkthrough(id);
       const walkthrough = store.update(id, (draft) => {
+        // Editing by hand after a rewrite makes that edit the one to keep.
+        if (summary !== draft.summary) draft.previousSummary = null;
         draft.summary = summary;
         draft.verdict = verdict;
       });
       changed(walkthrough);
       return { ok: true as const };
+    },
+
+    setViewed: ({ id, stopId, path, viewed }) => {
+      const key = viewedKey(stopId, path);
+      const walkthrough = store.update(id, (draft) => {
+        const rest = (draft.viewed ?? []).filter((entry) => entry !== key);
+        draft.viewed = viewed ? [...rest, key] : rest;
+      });
+      changed(walkthrough);
+      return { viewed: walkthrough.viewed ?? [] };
     },
 
     setProgress: ({ id, stopId }) => {
@@ -352,13 +686,26 @@ export default async function plugin(bb: BbPluginApi) {
 
     headStatus: async ({ id }) => {
       const { walkthrough } = store.get(id);
-      if (walkthrough.target.kind !== "pr" || walkthrough.status !== "open")
-        return { moved: false };
-      const info = await fetchPr({
-        repo: walkthrough.target.repo,
-        number: walkthrough.target.number,
-      });
-      return { moved: info.headSha !== walkthrough.target.headSha };
+      const target = walkthrough.target;
+      if (target.kind !== "pr")
+        return { moved: false, behindBy: null, diverged: false };
+      const info = await fetchPr({ repo: target.repo, number: target.number });
+      if (info.headSha === target.headSha)
+        return { moved: false, behindBy: 0, diverged: false };
+      const comparison = await compareCommits(
+        target.repo,
+        target.headSha,
+        info.headSha,
+      ).catch(() => null);
+      // GitHub cannot compare against a commit a force-push orphaned, so a
+      // failed comparison means the branch was rewritten.
+      return comparison === null
+        ? { moved: true, behindBy: 0, diverged: true }
+        : {
+            moved: true,
+            behindBy: comparison.aheadBy,
+            diverged: comparison.diverged,
+          };
     },
 
     submit: async ({ id }) => {
@@ -746,4 +1093,40 @@ function formatHunks(label: string, files: readonly DiffFile[]): string {
     }
   }
   return out.join("\n");
+}
+
+function newMessageId(): string {
+  return `dm_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+/** Checks a conversation's line range against the snapshot it is about. */
+function resolveAnchor(
+  walkthrough: Walkthrough,
+  anchor: {
+    path: string;
+    side: "LEFT" | "RIGHT";
+    line: number;
+    startLine: number | null;
+  } | null,
+): Discussion["anchor"] {
+  if (anchor === null) return null;
+  const file = walkthrough.files.find(
+    (candidate) => candidate.path === anchor.path,
+  );
+  const start = anchor.startLine ?? anchor.line;
+  const hunk =
+    file === undefined || start > anchor.line
+      ? null
+      : findHunkForRange(file, anchor.side, start, anchor.line);
+  if (hunk === null)
+    throw new Error(
+      `${anchor.path}:${anchor.line} is not in this walkthrough's diff.`,
+    );
+  return {
+    path: anchor.path,
+    side: anchor.side,
+    line: anchor.line,
+    startLine: start !== anchor.line ? start : null,
+    hunkId: hunk.id,
+  };
 }

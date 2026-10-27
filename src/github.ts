@@ -112,6 +112,7 @@ export function repoFromRemote(
 export interface PrInfo {
   url: string;
   title: string;
+  body: string;
   author: string;
   headSha: string;
   state: string;
@@ -126,7 +127,7 @@ export async function fetchPr(
       "api",
       `repos/${ref.repo}/pulls/${ref.number}`,
       "--jq",
-      "{url: .html_url, title, author: .user.login, headSha: .head.sha, state}",
+      '{url: .html_url, title, body: (.body // ""), author: .user.login, headSha: .head.sha, state}',
     ],
     { signal },
   );
@@ -206,4 +207,79 @@ export async function submitReview(
     { stdin: JSON.stringify(payload), signal },
   );
   return raw.trim();
+}
+
+/** The PR description now, with images the BB webview can load. */
+export async function fetchPrDescription(
+  ref: PrRef,
+  signal?: AbortSignal,
+): Promise<string> {
+  const raw = await runGh(
+    [
+      "api",
+      `repos/${ref.repo}/pulls/${ref.number}`,
+      "-H",
+      "Accept: application/vnd.github.full+json",
+      "--jq",
+      '{body: (.body // ""), html: (.body_html // "")}',
+    ],
+    { signal },
+  );
+  const { body, html } = JSON.parse(raw) as { body: string; html: string };
+  return signImages(body, html);
+}
+
+const IMAGE_IN_MARKDOWN =
+  /(!\[[^\]]*\]\()([^)\s]+)((?:\s+"[^"]*")?\))|(<img\b[^>]*?\bsrc=")([^"]+)(")/g;
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+/**
+ * Images attached to a private repository's PR need a GitHub session to load.
+ * GitHub's rendered HTML carries short-lived signed URLs for them, in the same
+ * order as the Markdown's images; swap those in. When the counts disagree the
+ * pairing is unsafe, so the body is returned unchanged.
+ */
+export function signImages(body: string, html: string): string {
+  const signed = [...html.matchAll(/<img\b[^>]*?\bsrc="([^"]+)"/g)].map(
+    (match) => decodeEntities(match[1]!),
+  );
+  const originals = [...body.matchAll(IMAGE_IN_MARKDOWN)];
+  if (signed.length !== originals.length) return body;
+  let index = 0;
+  return body.replace(
+    IMAGE_IN_MARKDOWN,
+    (match, mdOpen, mdUrl, mdClose, tagOpen, tagUrl, tagClose) => {
+      const replacement = signed[index++]!;
+      if (mdOpen !== undefined) return `${mdOpen}${replacement}${mdClose}`;
+      return `${tagOpen}${replacement}${tagClose}`;
+    },
+  );
+}
+
+/** Commits on `head` that `base` lacks; diverged after a force-push. */
+export async function compareCommits(
+  repo: string,
+  base: string,
+  head: string,
+  signal?: AbortSignal,
+): Promise<{ aheadBy: number; diverged: boolean }> {
+  const raw = await runGh(
+    [
+      "api",
+      `repos/${repo}/compare/${base}...${head}`,
+      "--jq",
+      "{aheadBy: .ahead_by, status}",
+    ],
+    { signal },
+  );
+  const result = JSON.parse(raw) as { aheadBy: number; status: string };
+  return { aheadBy: result.aheadBy, diverged: result.status === "diverged" };
 }

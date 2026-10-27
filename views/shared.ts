@@ -6,7 +6,7 @@ import {
   useRpc,
   type PluginRpcClient,
 } from "@get-bb/plugin-sdk/app";
-import type { DraftComment, Walkthrough } from "../src/model";
+import type { Discussion, DraftComment, Walkthrough } from "../src/model";
 import type { rpcContract } from "../server";
 
 /** The thread action tab id registered in app.tsx. */
@@ -34,7 +34,11 @@ export function readChangePayload(
     : null;
 }
 
-type WalkthroughData = { walkthrough: Walkthrough; comments: DraftComment[] };
+export type WalkthroughData = {
+  walkthrough: Walkthrough;
+  comments: DraftComment[];
+  discussions: Discussion[];
+};
 
 /**
  * Reuses unchanged parts of the previous fetch. The diff snapshot never
@@ -47,22 +51,26 @@ function keepStableParts(
 ): WalkthroughData {
   if (previous === null || previous.walkthrough.id !== next.walkthrough.id)
     return next;
-  const before = new Map(
-    previous.comments.map((comment) => [comment.id, comment]),
-  );
+  const reuse = <T extends { id: string }>(
+    old: readonly T[],
+    next: T[],
+  ): T[] => {
+    const before = new Map(old.map((item) => [item.id, item]));
+    return next.map((item) => {
+      const kept = before.get(item.id);
+      return kept !== undefined && JSON.stringify(kept) === JSON.stringify(item)
+        ? kept
+        : item;
+    });
+  };
   return {
     walkthrough: {
       ...next.walkthrough,
       files: previous.walkthrough.files,
       chapters: previous.walkthrough.chapters,
     },
-    comments: next.comments.map((comment) => {
-      const old = before.get(comment.id);
-      return old !== undefined &&
-        JSON.stringify(old) === JSON.stringify(comment)
-        ? old
-        : comment;
-    }),
+    comments: reuse(previous.comments, next.comments),
+    discussions: reuse(previous.discussions, next.discussions),
   };
 }
 

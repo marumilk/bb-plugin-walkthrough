@@ -49,6 +49,21 @@ export function buildReviewPayload(
   };
 }
 
+/**
+ * A fingerprint of what the summary should reflect: the kept comments and
+ * their wording. When it changes, the summary may be out of date.
+ */
+export function summaryBasis(comments: readonly DraftComment[]): string {
+  const text = keptComments(comments)
+    .map((comment) => `${comment.path}:${comment.line}:${comment.body.trim()}`)
+    .sort()
+    .join("\n");
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1)
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+  return `${keptComments(comments).length}:${(hash >>> 0).toString(36)}`;
+}
+
 /** Problems that would make GitHub reject the review, shown before posting. */
 export function reviewBlockers(
   walkthrough: Walkthrough,

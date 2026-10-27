@@ -50,6 +50,64 @@ describe("documentSchema", () => {
   });
 });
 
+describe("stop priority and notes", () => {
+  it("defaults to review and keeps notes on the stop's own hunks", () => {
+    const result = resolveDocument(
+      doc({
+        chapters: [
+          {
+            title: "A",
+            stops: [
+              {
+                title: "One",
+                prose: "x",
+                hunks: ["src/deliver.ts:h1"],
+                priority: "critical",
+                notes: [
+                  { hunk: "src/deliver.ts:h1", body: "Watch the retry." },
+                ],
+              },
+              { title: "Two", prose: "x", hunks: ["src/queue.ts:h1"] },
+            ],
+          },
+        ],
+      }),
+      files,
+    );
+    if (!result.ok) throw new Error(result.errors.join("\n"));
+    const [one, two] = result.walkthrough.chapters[0]!.stops;
+    expect(one).toMatchObject({
+      priority: "critical",
+      notes: [{ hunkId: "src/deliver.ts:h1", body: "Watch the retry." }],
+    });
+    expect(two).toMatchObject({ priority: "review", notes: [] });
+  });
+
+  it("rejects a note on a hunk the stop does not show", () => {
+    const result = resolveDocument(
+      doc({
+        chapters: [
+          {
+            title: "A",
+            stops: [
+              {
+                title: "One",
+                prose: "x",
+                hunks: ["src/deliver.ts:h1"],
+                notes: [{ hunk: "src/queue.ts:h1", body: "x" }],
+              },
+            ],
+          },
+        ],
+      }),
+      files,
+    );
+    expect(!result.ok && result.errors).toContain(
+      'chapters.0.stops.0.notes.0.hunk: "src/queue.ts:h1" is not one of this stop\'s hunks',
+    );
+  });
+});
+
 describe("resolveDocument", () => {
   it("assigns comments to the stop showing their hunk and gathers leftovers", () => {
     const result = resolveDocument(doc(), files);
@@ -94,6 +152,8 @@ describe("resolveDocument", () => {
         title: "2 files",
         prose: "",
         hunkIds: ["src/deliver.ts:h2", "src/queue.ts:h1"],
+        priority: "review",
+        notes: [],
       },
     ]);
   });

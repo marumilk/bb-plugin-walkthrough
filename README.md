@@ -17,7 +17,16 @@ It replaces Codiff for both jobs.
 - Or open **Reviews** in the sidebar: it lists the PRs waiting for your review.
   **Start review** runs a review thread in a fresh worktree of the matching BB project.
 - In the tab, use Next and Back (or `j` and `k`) to move between stops, and the step menu to jump.
-  Hover a diff line and click **+** to add your own comment; drag across line numbers for a range.
+  Each stop opens with a card labelled **Review** or **Critical**; the agent can add short notes between files.
+- Hover a diff line and click **+**, then **Add comment** for a review comment or **Ask agent** for a private question.
+  Drag across line numbers for a range.
+  **Ask agent** also sits on every draft and on each stop card.
+  The question goes to the walkthrough's thread and the answer appears inline; these conversations are never posted.
+- For pull requests, the first step shows the PR description as the author wrote it.
+- On the Finish step, **Rewrite with agent** redrafts the review summary from the comments you kept; **Undo rewrite** restores yours.
+  A note appears when your comments have changed since the summary was written.
+- Check **Viewed** on a file to collapse it; the chevron opens it again.
+  The step menu ticks stops whose files are all viewed.
 - The header button shows how many drafts are still undecided.
 
 ## Settings

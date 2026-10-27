@@ -12,7 +12,7 @@ import {
   type DraftComment,
   type Walkthrough,
 } from "../src/model";
-import { keptComments, reviewBlockers } from "../src/submission";
+import { keptComments, reviewBlockers, summaryBasis } from "../src/submission";
 import { errorMessage, pluralize, type Rpc } from "./shared";
 
 const VERDICTS: { value: Verdict; label: string; hint: string }[] = [
@@ -46,6 +46,17 @@ export function FinishStep({
     summary: walkthrough.summary,
     verdict: walkthrough.verdict,
   });
+  const rewriting = Boolean(walkthrough.summaryJob);
+
+  // Take summaries written elsewhere (the agent's rewrite, an undo) unless
+  // the reviewer has unsaved typing in the box.
+  useEffect(() => {
+    if (walkthrough.summary === saved.current.summary) return;
+    setSummary((local) =>
+      local === saved.current.summary ? walkthrough.summary : local,
+    );
+    saved.current = { ...saved.current, summary: walkthrough.summary };
+  }, [walkthrough.summary]);
 
   useEffect(() => {
     if (!isPr || readOnly) return;
@@ -87,6 +98,27 @@ export function FinishStep({
     ? reviewBlockers({ ...walkthrough, summary, verdict }, comments)
     : [];
   const localEmpty = !isPr && kept.length === 0 && summary.trim() === "";
+
+  const summaryStale =
+    isPr &&
+    kept.length > 0 &&
+    walkthrough.summaryBasis !== summaryBasis(comments);
+
+  const rewrite = async () => {
+    try {
+      // The agent reads the saved summary, so save any typing first.
+      await persist({ summary, verdict });
+      await rpc.call("rewriteSummary", { id: walkthrough.id });
+    } catch (cause) {
+      toast.error(errorMessage(cause));
+    }
+  };
+
+  const undoRewrite = () => {
+    rpc
+      .call("undoSummaryRewrite", { id: walkthrough.id })
+      .catch((cause: unknown) => toast.error(errorMessage(cause)));
+  };
 
   const submit = async () => {
     setSubmitting(true);
@@ -151,11 +183,58 @@ export function FinishStep({
   return (
     <div className="space-y-5">
       <section className="space-y-2">
-        <label htmlFor="walkthrough-summary" className="text-sm font-medium">
-          {isPr ? "Review summary" : "Overall note for the agent"}
-        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <label
+            htmlFor="walkthrough-summary"
+            className="mr-auto text-sm font-medium"
+          >
+            {isPr ? "Review summary" : "Overall note for the agent"}
+          </label>
+          {isPr && walkthrough.previousSummary != null && !rewriting ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-muted-foreground"
+              onClick={undoRewrite}
+            >
+              Undo rewrite
+            </Button>
+          ) : null}
+          {isPr ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              disabled={rewriting}
+              onClick={() => void rewrite()}
+            >
+              <Icon
+                name={rewriting ? "Loading" : "AiContentGenerator01"}
+                className={cn(rewriting && "animate-spin")}
+                aria-hidden="true"
+              />
+              {rewriting ? "Rewriting…" : "Rewrite with agent"}
+            </Button>
+          ) : null}
+        </div>
+        {rewriting ? (
+          <p className="text-xs text-muted-foreground" role="status">
+            The agent is rewriting the summary from your{" "}
+            {pluralize(kept.length, "kept comment")} in its thread.
+          </p>
+        ) : walkthrough.summaryError ? (
+          <p className="text-xs text-destructive" role="alert">
+            {walkthrough.summaryError}
+          </p>
+        ) : summaryStale ? (
+          <p className="text-xs text-muted-foreground">
+            Your comments changed since this summary was written. Rewrite it to
+            match what you are posting.
+          </p>
+        ) : null}
         <Textarea
           id="walkthrough-summary"
+          disabled={rewriting}
           value={summary}
           onChange={(event) => setSummary(event.target.value)}
           rows={Math.min(14, Math.max(4, summary.split("\n").length + 1))}

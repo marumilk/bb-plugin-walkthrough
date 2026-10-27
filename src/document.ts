@@ -2,6 +2,11 @@
 // snapshot. Everything here is pure so it can be tested without a host.
 import { z } from "zod";
 import {
+  CHAPTER_ICON_NAMES,
+  inferChapterIcon,
+  type ChapterIcon,
+} from "./icons";
+import {
   describeRanges,
   findHunkForRange,
   parseHunkId,
@@ -37,17 +42,36 @@ export type TargetInput = z.infer<typeof targetInputSchema>;
 
 const MAX_HUNKS_PER_STOP = 20;
 
+export const PRIORITIES = ["review", "critical"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+
 const stopSchema = z
   .object({
     title: z.string().trim().min(1).max(80),
     prose: z.string().trim().min(1).max(2000),
     hunks: z.array(z.string().min(1)).min(1).max(MAX_HUNKS_PER_STOP),
+    /** "critical" marks a stop the reviewer must read closely. */
+    priority: z.enum(PRIORITIES).default("review"),
+    /** Short asides shown just above the file holding `hunk`. */
+    notes: z
+      .array(
+        z
+          .object({
+            hunk: z.string().min(1),
+            body: z.string().trim().min(1).max(1200),
+          })
+          .strict(),
+      )
+      .max(MAX_HUNKS_PER_STOP)
+      .default([]),
   })
   .strict();
 
 const chapterSchema = z
   .object({
     title: z.string().trim().min(1).max(40),
+    /** Shown beside the title in the timeline; inferred from it when absent. */
+    icon: z.enum(CHAPTER_ICON_NAMES).optional(),
     blurb: z.string().trim().max(400).optional(),
     stops: z.array(stopSchema).min(1).max(14),
   })
@@ -87,11 +111,15 @@ export interface ResolvedStop {
   title: string;
   prose: string;
   hunkIds: string[];
+  priority: Priority;
+  notes: { hunkId: string; body: string }[];
 }
 
 export interface ResolvedChapter {
   id: string;
   title: string;
+  /** Absent on walkthroughs made before chapters had icons. */
+  icon?: ChapterIcon;
   blurb: string | null;
   /** True for the chapter the plugin adds for hunks no stop covered. */
   generated: boolean;
@@ -150,6 +178,7 @@ export function resolveDocument(
   const chapters: ResolvedChapter[] = doc.chapters.map((chapter, c) => ({
     id: `c${c + 1}`,
     title: chapter.title,
+    icon: chapter.icon ?? inferChapterIcon(chapter.title),
     blurb: chapter.blurb ?? null,
     generated: false,
     stops: chapter.stops.map((stop, s) => {
@@ -177,7 +206,22 @@ export function resolveDocument(
         hunkToStop.set(ref, id);
         hunkIds.push(ref);
       });
-      return { id, title: stop.title, prose: stop.prose, hunkIds };
+      const notes = stop.notes.flatMap((note, n) => {
+        if (stop.hunks.includes(note.hunk))
+          return [{ hunkId: note.hunk, body: note.body }];
+        errors.push(
+          `chapters.${c}.stops.${s}.notes.${n}.hunk: "${note.hunk}" is not one of this stop's hunks`,
+        );
+        return [];
+      });
+      return {
+        id,
+        title: stop.title,
+        prose: stop.prose,
+        hunkIds,
+        priority: stop.priority,
+        notes,
+      };
     }),
   }));
 
@@ -209,11 +253,12 @@ export function resolveDocument(
         group.length === 1
           ? parseHunkId(group[0]![0]!)!.path
           : `${group.length} files`;
-      return { id, title, prose: "", hunkIds };
+      return { id, title, prose: "", hunkIds, priority: "review", notes: [] };
     });
     chapters.push({
       id: "rest",
       title: "Other changes",
+      icon: "other",
       blurb: null,
       generated: true,
       stops,
