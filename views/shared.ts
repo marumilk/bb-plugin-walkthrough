@@ -1,0 +1,111 @@
+// Small app-side helpers shared by the tab, header button, directive, and
+// Reviews page.
+import { useCallback, useEffect, useState } from "react";
+import {
+  useRealtime,
+  useRpc,
+  type PluginRpcClient,
+} from "@get-bb/plugin-sdk/app";
+import type { DraftComment, Walkthrough } from "../src/model";
+import type { rpcContract } from "../server";
+
+/** The thread action tab id registered in app.tsx. */
+export const WALKTHROUGH_TAB = "walkthrough";
+export const WALKTHROUGH_CHANGED = "walkthrough-changed";
+export const WALKTHROUGH_READY = "walkthrough-ready";
+
+export type Rpc = PluginRpcClient<typeof rpcContract>;
+
+export function useWalkthroughRpc(): Rpc {
+  return useRpc<typeof rpcContract>();
+}
+
+export function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+export function readChangePayload(
+  payload: unknown,
+): { id: string; threadId: string } | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { id, threadId } = payload as Record<string, unknown>;
+  return typeof id === "string" && typeof threadId === "string"
+    ? { id, threadId }
+    : null;
+}
+
+type WalkthroughData = { walkthrough: Walkthrough; comments: DraftComment[] };
+
+/**
+ * Reuses unchanged parts of the previous fetch. The diff snapshot never
+ * changes after submission, and keeping its identity stops every realtime
+ * refresh from re-rendering (and re-measuring) every diff on screen.
+ */
+function keepStableParts(
+  previous: WalkthroughData | null,
+  next: WalkthroughData,
+): WalkthroughData {
+  if (previous === null || previous.walkthrough.id !== next.walkthrough.id)
+    return next;
+  const before = new Map(
+    previous.comments.map((comment) => [comment.id, comment]),
+  );
+  return {
+    walkthrough: {
+      ...next.walkthrough,
+      files: previous.walkthrough.files,
+      chapters: previous.walkthrough.chapters,
+    },
+    comments: next.comments.map((comment) => {
+      const old = before.get(comment.id);
+      return old !== undefined &&
+        JSON.stringify(old) === JSON.stringify(comment)
+        ? old
+        : comment;
+    }),
+  };
+}
+
+/** One walkthrough and its comments, kept current over realtime. */
+export function useWalkthrough(id: string | null) {
+  const rpc = useWalkthroughRpc();
+  const [data, setData] = useState<WalkthroughData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refetch = useCallback(() => {
+    if (id === null) return;
+    rpc.call("get", { id }).then(
+      (result) => {
+        setData((previous) => keepStableParts(previous, result));
+        setError(null);
+      },
+      (cause: unknown) => setError(errorMessage(cause)),
+    );
+  }, [rpc, id]);
+  useEffect(refetch, [refetch]);
+  useRealtime(WALKTHROUGH_CHANGED, (payload) => {
+    if (readChangePayload(payload)?.id === id) refetch();
+  });
+  return { rpc, data, setData, error, refetch };
+}
+
+/**
+ * Walkthroughs to open once BB shows their thread. The Reviews page leaves an
+ * entry here and navigates; the thread's header button opens the tab when it
+ * mounts, because only thread surfaces can open thread panels.
+ */
+export const pendingOpens = new Map<string, string>();
+
+export function relativeTime(at: number | string): string {
+  const then = typeof at === "number" ? at : Date.parse(at);
+  const seconds = Math.round((Date.now() - then) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+export function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
