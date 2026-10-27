@@ -741,4 +741,13 @@ describe("review threads from the Reviews page", () => {
     expect(spawned[0]!.permissionMode).toBe("auto");
     expect(spawned[0]!.prompt).toMatch(/never run it/);
   });
+
+  it("refuse a repository name that is not owner/name", async () => {
+    const { harness, spawned } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    await expect(
+      harness.behavior.callRpc("startReview", { repo: "../..", number: 42 }),
+    ).rejects.toThrow(/input validation failed/);
+    expect(spawned).toEqual([]);
+  });
 });

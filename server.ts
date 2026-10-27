@@ -35,6 +35,7 @@ import {
   fetchPrDescription,
   compareCommits,
   listReviewRequests,
+  isRepoName,
   repoFromRemote,
   submitReview,
 } from "./src/github";
@@ -114,7 +115,10 @@ export const rpcContract = defineRpcContract({
   },
   startReview: {
     input: z
-      .object({ repo: z.string().min(3), number: z.number().int().positive() })
+      .object({
+        repo: z.string().refine(isRepoName, "Expected owner/name"),
+        number: z.number().int().positive(),
+      })
       .strict(),
     output: z.object({ threadId: z.string() }),
   },

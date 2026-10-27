@@ -38,6 +38,36 @@ describe("PR references", () => {
     expect(() => parsePrRef("#42", null)).toThrow(/needs a repository/);
   });
 
+  it("accepts real repository names, with or without a PR page suffix", () => {
+    expect(
+      parsePrRef("https://github.com/acme/app.js/pull/12/files", null),
+    ).toEqual({ repo: "acme/app.js", number: 12 });
+    expect(parsePrRef("acme-co/my_repo-2#3", null)).toEqual({
+      repo: "acme-co/my_repo-2",
+      number: 3,
+    });
+  });
+
+  it("refuses names that would reshape the GitHub API path", () => {
+    for (const input of [
+      "https://github.com/../../pull/1",
+      "https://github.com/acme/app?x=1/pull/2",
+      "https://github.com/acme/app#/pull/3",
+      "https://github.com/acme/%2e%2e/pull/4",
+      "../..#5",
+      "acme/..#6",
+    ]) {
+      expect(() => parsePrRef(input, null), input).toThrow();
+    }
+    expect(() => parsePrRef("#7", "../evil")).toThrow();
+  });
+
+  it("refuses pull request numbers that are not positive integers", () => {
+    expect(() => parsePrRef("acme/app#0", null)).toThrow();
+    expect(() => parsePrRef(0, "acme/app")).toThrow();
+    expect(() => parsePrRef("acme/app#99999999999999999999", null)).toThrow();
+  });
+
   it("reads owner/repo from SSH and HTTPS remotes", () => {
     expect(repoFromRemote("git@github.com:acme/app.git")).toBe("acme/app");
     expect(repoFromRemote("ssh://git@github.com/acme/app.git")).toBe(
@@ -51,5 +81,7 @@ describe("PR references", () => {
     expect(repoFromRemote("https://gitlab.com/acme/app.git")).toBeNull();
     expect(repoFromRemote("")).toBeNull();
     expect(repoFromRemote(null)).toBeNull();
+    expect(repoFromRemote("git@github.com:../evil.git")).toBeNull();
+    expect(repoFromRemote("https://github.com/acme/app?x=1")).toBeNull();
   });
 });

@@ -71,6 +71,31 @@ export interface PrRef {
 }
 
 /**
+ * `owner/name` within GitHub's own character rules: owners are letters,
+ * digits, and hyphens; names add `.` and `_` but are never `.` or `..`.
+ * Repository names go into `gh api` paths, so anything else (a `..`, `?`,
+ * `#`, or `%`) could point a call, including the one that posts a review,
+ * somewhere else.
+ */
+export function isRepoName(repo: string): boolean {
+  const match = /^([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})$/.exec(repo);
+  return match !== null && match[2] !== "." && match[2] !== "..";
+}
+
+function prRef(repo: string, number: string | number, text: string): PrRef {
+  if (!isRepoName(repo)) {
+    throw new Error(
+      `"${text}" names the repository "${repo}", which is not a valid owner/name.`,
+    );
+  }
+  const parsed = Number(number);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`"${text}" is not a valid pull request number.`);
+  }
+  return { repo, number: parsed };
+}
+
+/**
  * Accepts a PR URL, `owner/repo#123`, or a bare number when `fallbackRepo`
  * names the repository (usually the BB project's remote).
  */
@@ -79,19 +104,20 @@ export function parsePrRef(
   fallbackRepo: string | null,
 ): PrRef {
   const text = String(input).trim();
-  const url = /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/i.exec(
-    text,
-  );
-  if (url) return { repo: url[1]!, number: Number(url[2]) };
-  const short = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(text);
-  if (short) return { repo: short[1]!, number: Number(short[2]) };
+  const url =
+    /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)(?:[/?#]|$)/i.exec(
+      text,
+    );
+  if (url) return prRef(url[1]!, url[2]!, text);
+  const short = /^([^/\s#]+\/[^/\s#]+)#(\d+)$/.exec(text);
+  if (short) return prRef(short[1]!, short[2]!, text);
   if (/^#?\d+$/.test(text)) {
     if (fallbackRepo === null) {
       throw new Error(
         `"${text}" needs a repository; pass a PR URL or owner/repo#${text.replace("#", "")}.`,
       );
     }
-    return { repo: fallbackRepo, number: Number(text.replace("#", "")) };
+    return prRef(fallbackRepo, text.replace("#", ""), text);
   }
   throw new Error(
     `"${text}" is not a pull request; pass a URL, owner/repo#123, or a number.`,
@@ -106,7 +132,7 @@ export function repoFromRemote(
   const match = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(
     remote.trim(),
   );
-  return match ? match[1]! : null;
+  return match !== null && isRepoName(match[1]!) ? match[1]! : null;
 }
 
 export interface PrInfo {
