@@ -35,11 +35,17 @@ const deliverPatch = PR_DIFF.slice(
 );
 const queuePatch = PR_DIFF.slice(PR_DIFF.indexOf("diff --git a/src/queue.ts"));
 
-async function setup(
-  document: unknown = LOCAL_DOC,
-  { holdAnswers = false }: { holdAnswers?: boolean } = {},
-) {
+/** Argv for `bb walkthrough submit`, with the document passed inline. */
+function submitArgs(document: unknown = LOCAL_DOC): string[] {
+  return ["submit", "--document", JSON.stringify(document)];
+}
+
+/** What sits at every path on the thread's machine, for leak checks. */
+const SECRET_FILE = "ghp_SECRETTOKEN0123456789 and the rest of a credential";
+
+async function setup({ holdAnswers = false }: { holdAnswers?: boolean } = {}) {
   const sent: unknown[] = [];
+  const fileReads: string[] = [];
   // The walkthrough thread's event log. Sending a question "runs" a turn
   // that answers it, the way BB records a real one. With `holdAnswers`, the
   // turns stay open until `answerAll()`.
@@ -156,12 +162,14 @@ async function setup(
           }) as never,
       },
       files: {
-        read: async ({ path }: { path: string }) =>
-          ({
-            content: JSON.stringify(document),
+        read: async ({ path }: { path: string }) => {
+          fileReads.push(path);
+          return {
+            content: SECRET_FILE,
             contentEncoding: "utf8",
             path,
-          }) as never,
+          } as never;
+        },
       },
     },
   });
@@ -179,16 +187,15 @@ async function setup(
   const setEventsDown = (down: boolean) => {
     eventsDown = down;
   };
-  return { ...host, sent, get, mutate, answerAll, setEventsDown };
+  return { ...host, sent, get, mutate, answerAll, setEventsDown, fileReads };
 }
 
 async function submitWalkthrough(
   harness: Awaited<ReturnType<typeof setup>>["harness"],
 ): Promise<string> {
-  const out = await harness.behavior.runCli(
-    ["submit", "--file", "/tmp/w.json"],
-    { threadId: "thr_1" },
-  );
+  const out = await harness.behavior.runCli(submitArgs(), {
+    threadId: "thr_1",
+  });
   return /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
 }
 
@@ -215,10 +222,9 @@ describe("bb walkthrough submit", () => {
   it("snapshots local changes, stores drafts, and announces the walkthrough", async () => {
     const { harness, get } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const result = await harness.behavior.runCli(
-      ["submit", "--file", "/tmp/w.json"],
-      { threadId: "thr_1" },
-    );
+    const result = await harness.behavior.runCli(submitArgs(), {
+      threadId: "thr_1",
+    });
     expect(result.exitCode).toBe(0);
     const id = /::walkthrough\{id="(wt_[a-z0-9]+)"\}/.exec(
       result.stdout ?? "",
@@ -244,14 +250,14 @@ describe("bb walkthrough submit", () => {
   });
 
   it("returns every anchoring problem instead of opening anything", async () => {
-    const { harness } = await setup({
-      ...LOCAL_DOC,
-      comments: [{ path: "src/deliver.ts", line: 99, body: "x" }],
-    });
+    const { harness } = await setup();
     dispose = () => harness.lifecycle.dispose();
     const result = await harness.behavior.runCli(
-      ["submit", "--file", "w.json"],
-      { threadId: "thr_1", cwd: "/tmp" },
+      submitArgs({
+        ...LOCAL_DOC,
+        comments: [{ path: "src/deliver.ts", line: 99, body: "x" }],
+      }),
+      { threadId: "thr_1" },
     );
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("line 99 (RIGHT) is outside the diff");
@@ -263,11 +269,7 @@ describe("bb walkthrough submit", () => {
   it("requires a thread", async () => {
     const { harness } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const result = await harness.behavior.runCli([
-      "submit",
-      "--file",
-      "/tmp/w.json",
-    ]);
+    const result = await harness.behavior.runCli(submitArgs());
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("Run this from a BB thread");
   });
@@ -277,10 +279,9 @@ describe("reviewing a local walkthrough", () => {
   it("keeps, edits, adds, and sends only kept comments back to the thread", async () => {
     const { harness, sent, get, mutate } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const out = await harness.behavior.runCli(
-      ["submit", "--file", "/tmp/w.json"],
-      { threadId: "thr_1" },
-    );
+    const out = await harness.behavior.runCli(submitArgs(), {
+      threadId: "thr_1",
+    });
     const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
     const { comments } = await get(id!);
 
@@ -343,10 +344,9 @@ describe("reviewing a local walkthrough", () => {
   it("only lets the reviewer delete their own comments", async () => {
     const { harness, get } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const out = await harness.behavior.runCli(
-      ["submit", "--file", "/tmp/w.json"],
-      { threadId: "thr_1" },
-    );
+    const out = await harness.behavior.runCli(submitArgs(), {
+      threadId: "thr_1",
+    });
     const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
     const { comments } = await get(id!);
     await expect(
@@ -362,10 +362,9 @@ describe("private conversations with the agent", () => {
   it("asks the walkthrough's thread and records its answer, never as a comment", async () => {
     const { harness, get, sent } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const out = await harness.behavior.runCli(
-      ["submit", "--file", "/tmp/w.json"],
-      { threadId: "thr_1" },
-    );
+    const out = await harness.behavior.runCli(submitArgs(), {
+      threadId: "thr_1",
+    });
     const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
     const { comments } = await get(id);
 
@@ -423,10 +422,9 @@ describe("private conversations with the agent", () => {
   it("refuses an anchor outside the diff", async () => {
     const { harness } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const out = await harness.behavior.runCli(
-      ["submit", "--file", "/tmp/w.json"],
-      { threadId: "thr_1" },
-    );
+    const out = await harness.behavior.runCli(submitArgs(), {
+      threadId: "thr_1",
+    });
     const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
     await expect(
       harness.behavior.callRpc("ask", {
@@ -451,10 +449,9 @@ describe("viewed files", () => {
   it("records Viewed per file within a stop", async () => {
     const { harness, get } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const out = await harness.behavior.runCli(
-      ["submit", "--file", "/tmp/w.json"],
-      { threadId: "thr_1" },
-    );
+    const out = await harness.behavior.runCli(submitArgs(), {
+      threadId: "thr_1",
+    });
     const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
     await harness.behavior.callRpc("setViewed", {
       id,
@@ -484,10 +481,9 @@ describe("rewriting the review summary", () => {
   it("asks the agent, puts its summary in place, and can undo", async () => {
     const { harness, get, sent } = await setup();
     dispose = () => harness.lifecycle.dispose();
-    const out = await harness.behavior.runCli(
-      ["submit", "--file", "/tmp/w.json"],
-      { threadId: "thr_1" },
-    );
+    const out = await harness.behavior.runCli(submitArgs(), {
+      threadId: "thr_1",
+    });
     const id = /id="(wt_[a-z0-9]+)"/.exec(out.stdout ?? "")![1]!;
     const { comments } = await get(id);
     await harness.behavior.callRpc("setCommentStatus", {
@@ -551,9 +547,7 @@ describe("late and concurrent changes", () => {
   const nextPoll = () => new Promise((resolve) => setTimeout(resolve, 1800));
 
   it("drops the answer to a conversation deleted while the agent answered", async () => {
-    const { harness, get, answerAll } = await setup(LOCAL_DOC, {
-      holdAnswers: true,
-    });
+    const { harness, get, answerAll } = await setup({ holdAnswers: true });
     dispose = () => harness.lifecycle.dispose();
     const id = await submitWalkthrough(harness);
     const { discussion } = (await harness.behavior.callRpc("ask", {
@@ -576,9 +570,7 @@ describe("late and concurrent changes", () => {
   });
 
   it("drops a summary rewrite whose walkthrough was deleted meanwhile", async () => {
-    const { harness, answerAll } = await setup(LOCAL_DOC, {
-      holdAnswers: true,
-    });
+    const { harness, answerAll } = await setup({ holdAnswers: true });
     dispose = () => harness.lifecycle.dispose();
     const id = await submitWalkthrough(harness);
     await harness.behavior.callRpc("rewriteSummary", { id });
@@ -620,7 +612,7 @@ describe("late and concurrent changes", () => {
   });
 
   it("rewrites the summary once when asked twice at once", async () => {
-    const { harness, sent } = await setup(LOCAL_DOC, { holdAnswers: true });
+    const { harness, sent } = await setup({ holdAnswers: true });
     dispose = () => harness.lifecycle.dispose();
     const id = await submitWalkthrough(harness);
     const rewrite = () => harness.behavior.callRpc("rewriteSummary", { id });
@@ -662,5 +654,59 @@ describe("late and concurrent changes", () => {
     expect(
       ((await get(id)) as unknown as { discussions: unknown[] }).discussions,
     ).toEqual([]);
+  });
+});
+
+describe("what an agent can reach through the CLI", () => {
+  it("never reads a file for the agent, so sandboxed files stay out of reach", async () => {
+    const { harness, fileReads } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const result = await harness.behavior.runCli(
+      ["submit", "--file", "/home/me/.config/gh/hosts.yml"],
+      { threadId: "thr_1" },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(`${result.stdout ?? ""}${result.stderr ?? ""}`).not.toContain(
+      "ghp_",
+    );
+    expect(fileReads).toEqual([]);
+  });
+
+  it("reports a document that is not JSON", async () => {
+    const { harness } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const result = await harness.behavior.runCli(
+      ["submit", "--document", "{ not json"],
+      { threadId: "thr_1" },
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("The walkthrough is not valid JSON");
+  });
+
+  it("keeps each thread's walkthroughs to that thread", async () => {
+    const { harness, get } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    const elsewhere = { threadId: "thr_2" };
+
+    const shown = await harness.behavior.runCli(["show", id], elsewhere);
+    expect(shown.exitCode).not.toBe(0);
+    expect(shown.stderr).toContain(`No walkthrough with id ${id}`);
+    expect(shown.stdout ?? "").not.toContain("Retry failed deliveries");
+
+    const deleted = await harness.behavior.runCli(["delete", id], elsewhere);
+    expect(deleted.exitCode).not.toBe(0);
+    await expect(get(id)).resolves.toBeDefined();
+
+    const listed = await harness.behavior.runCli(["list"], elsewhere);
+    expect(listed.stdout).toBe("No walkthroughs yet.");
+
+    // Its own thread, and you at a terminal outside any thread, still can.
+    const own = await harness.behavior.runCli(["show", id], {
+      threadId: "thr_1",
+    });
+    expect(own.exitCode).toBe(0);
+    const terminal = await harness.behavior.runCli(["list"]);
+    expect(terminal.stdout).toContain(id);
   });
 });

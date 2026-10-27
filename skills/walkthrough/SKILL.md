@@ -123,9 +123,10 @@ Use a file-writing tool or a quoted heredoc (`<<'EOF'`).
 ## 5. Submit
 
 ```bash
-bb walkthrough submit --file "$TMPDIR/walkthrough-<id>.json"
+bb walkthrough submit --document-stdin < "$TMPDIR/walkthrough-<id>.json"
 ```
 
+Pass the document on stdin as shown; the command takes no file path.
 The command checks every hunk id and comment anchor against a fresh snapshot of the diff.
 If it fails, fix the listed problems and run it again; nothing opens until it passes.
 On success it opens the tab beside this thread and prints a line like `::walkthrough{id="wt_…"}`.
@@ -147,5 +148,6 @@ Reply with the summary text alone; it replaces the summary box, and the user can
 - For a pull request, the review is on GitHub; there is nothing left for you to do unless asked.
 - For local changes, you receive a message listing the kept comments.
   Address each one, then offer a fresh walkthrough of the result.
-- `bb walkthrough show <id>` prints the user's decisions on every draft, and `bb walkthrough list` lists recent walkthroughs.
+- `bb walkthrough show <id>` prints the user's decisions on every draft, and `bb walkthrough list` lists this thread's walkthroughs.
 - `bb walkthrough delete <id>` removes a walkthrough you submitted by mistake.
+- These commands only reach walkthroughs submitted from this thread.

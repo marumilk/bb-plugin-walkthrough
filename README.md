@@ -40,10 +40,13 @@ Change it with `bb plugin config walkthrough set reviewInstructions "…"` or in
 | Command                                                                                   | What it does                                                                |
 | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `bb walkthrough hunks --pr <ref> \| --local <uncommitted\|branch\|all> \| --commit <sha>` | Lists hunk ids to anchor stops and comments                                 |
-| `bb walkthrough submit --file <path>`                                                     | Validates a walkthrough document against a fresh diff snapshot and opens it |
+| `bb walkthrough submit --document-stdin < <path>`                                         | Validates a walkthrough document against a fresh diff snapshot and opens it |
 | `bb walkthrough show <id>`                                                                | Shows every draft and the reviewer's decision                               |
 | `bb walkthrough list`                                                                     | Lists recent walkthroughs                                                   |
 | `bb walkthrough delete <id>`                                                              | Deletes a walkthrough                                                       |
+
+Inside a thread, `show`, `list`, and `delete` only reach that thread's walkthroughs; from a terminal outside any thread they reach all of them.
+`submit` takes the document itself, never a path, so the plugin reads no files on an agent's behalf.
 
 `skills/walkthrough/SKILL.md` documents the document format for agents.
 

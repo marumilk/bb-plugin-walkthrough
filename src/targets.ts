@@ -14,7 +14,6 @@ export interface ThreadContext {
   threadId: string;
   projectId: string | null;
   environmentId: string | null;
-  hostId: string | null;
   repo: string | null;
 }
 
@@ -23,18 +22,13 @@ export async function threadContext(
   threadId: string,
 ): Promise<ThreadContext> {
   const thread = await bb.sdk.threads.get({ threadId });
-  const environmentId = thread.environmentId ?? null;
-  const [environment, project] = await Promise.all([
-    environmentId ? bb.sdk.environments.get({ environmentId }) : null,
-    thread.projectId
-      ? bb.sdk.projects.get({ projectId: thread.projectId })
-      : null,
-  ]);
+  const project = thread.projectId
+    ? await bb.sdk.projects.get({ projectId: thread.projectId })
+    : null;
   return {
     threadId,
     projectId: thread.projectId ?? null,
-    environmentId,
-    hostId: environment?.hostId ?? null,
+    environmentId: thread.environmentId ?? null,
     repo: repoFromRemote(project?.gitRemoteUrl ?? null),
   };
 }

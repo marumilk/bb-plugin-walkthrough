@@ -7,7 +7,6 @@
 // edits, or discards each draft comment, then posts one GitHub review (pull
 // requests) or sends the feedback back to the agent (local changes).
 import { randomUUID } from "node:crypto";
-import { isAbsolute, resolve as resolvePath } from "node:path";
 import {
   PluginCliError,
   cliCommand,
@@ -840,16 +839,29 @@ export default async function plugin(bb: BbPluginApi) {
     );
   };
 
-  const getForCli = (id: string) => {
+  /**
+   * A walkthrough the caller may see: inside a thread, only that thread's
+   * own; at a terminal outside any thread, any. Another thread's walkthrough
+   * reads as missing, so its existence does not leak either.
+   */
+  const getForCli = (id: string, callerThreadId: string | undefined) => {
+    const notFound = new PluginCliError(`No walkthrough with id ${id}`, {
+      code: "not_found",
+      hint: "Run `bb walkthrough list` for ids.",
+    });
+    let found;
     try {
-      return store.get(id);
+      found = store.get(id);
     } catch (error) {
-      if (!(error instanceof NotFoundError)) throw error;
-      throw new PluginCliError(error.message, {
-        code: "not_found",
-        hint: "Run `bb walkthrough list` for ids.",
-      });
+      if (error instanceof NotFoundError) throw notFound;
+      throw error;
     }
+    if (
+      callerThreadId !== undefined &&
+      found.walkthrough.threadId !== callerThreadId
+    )
+      throw notFound;
+    return found;
   };
 
   const idPositional = {
@@ -935,39 +947,29 @@ export default async function plugin(bb: BbPluginApi) {
         }),
 
         submit: cliCommand({
-          summary:
-            "Validate a walkthrough JSON file and open it beside this thread",
+          summary: "Validate a walkthrough and open it beside this thread",
           options: {
-            file: {
+            // The document arrives as text, never as a path: reading a path
+            // here would use the server's file access rather than the
+            // agent's, and reach files the agent's sandbox keeps from it.
+            // `--document-stdin < file` has the agent's own shell read it.
+            document: {
               type: "string",
               required: true,
-              description: "Path to the walkthrough JSON",
+              stdin: true,
+              description:
+                "The walkthrough JSON; pass --document-stdin to read it from stdin",
             },
           },
           async run(input, ctx) {
             const threadId = requireThread(ctx.threadId);
             const context = await threadContext(bb, threadId).catch(asCliError);
-            const path = isAbsolute(input.options.file)
-              ? input.options.file
-              : resolvePath(ctx.cwd ?? "/", input.options.file);
-            // The file lives on the machine running the thread, which may not be the server.
-            const file = await bb.sdk.files
-              .read({
-                path,
-                ...(context.hostId ? { hostId: context.hostId } : {}),
-              })
-              .catch(asCliError);
-            if (file.contentEncoding !== "utf8") {
-              throw new PluginCliError(`${path} is not a UTF-8 text file.`, {
-                code: "invalid_file",
-              });
-            }
             let raw: unknown;
             try {
-              raw = JSON.parse(file.content);
+              raw = JSON.parse(input.options.document);
             } catch (error) {
               throw new PluginCliError(
-                `${path} is not valid JSON: ${(error as Error).message}`,
+                `The walkthrough is not valid JSON: ${(error as Error).message}`,
                 { code: "invalid_json" },
               );
             }
@@ -1029,11 +1031,15 @@ export default async function plugin(bb: BbPluginApi) {
         }),
 
         show: cliCommand({
-          summary: "Show a walkthrough's comments and the reviewer's decisions",
+          summary:
+            "Show a walkthrough's comments and the reviewer's decisions (inside a thread, only its own)",
           positionals: [idPositional],
           options: { json: jsonOption },
-          async run(input) {
-            const { walkthrough, comments } = getForCli(input.positionals.id);
+          async run(input, ctx) {
+            const { walkthrough, comments } = getForCli(
+              input.positionals.id,
+              ctx.threadId,
+            );
             if (input.options.json) {
               const { files: _files, ...rest } = walkthrough;
               return {
@@ -1058,10 +1064,14 @@ export default async function plugin(bb: BbPluginApi) {
         }),
 
         delete: cliCommand({
-          summary: "Delete a walkthrough and its draft comments",
+          summary:
+            "Delete a walkthrough and its draft comments (inside a thread, only its own)",
           positionals: [idPositional],
-          async run(input) {
-            const { walkthrough } = getForCli(input.positionals.id);
+          async run(input, ctx) {
+            const { walkthrough } = getForCli(
+              input.positionals.id,
+              ctx.threadId,
+            );
             store.remove(walkthrough.id);
             changed(walkthrough);
             return { exitCode: 0, stdout: `Deleted ${walkthrough.id}` };
@@ -1069,10 +1079,10 @@ export default async function plugin(bb: BbPluginApi) {
         }),
 
         list: cliCommand({
-          summary: "List recent walkthroughs",
+          summary: "List recent walkthroughs (inside a thread, only its own)",
           options: { json: jsonOption },
-          async run(input) {
-            const walkthroughs = store.list(RECENT_LIMIT);
+          async run(input, ctx) {
+            const walkthroughs = store.list(RECENT_LIMIT, ctx.threadId);
             if (input.options.json)
               return { exitCode: 0, stdout: JSON.stringify(walkthroughs) };
             if (walkthroughs.length === 0)

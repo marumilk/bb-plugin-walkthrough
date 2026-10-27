@@ -206,12 +206,21 @@ export function createStore(bb: BbPluginApi) {
         : summarize(JSON.parse(row.data) as Walkthrough);
     },
 
-    list(limit: number): WalkthroughSummary[] {
-      const rows = db
-        .prepare(
-          "SELECT data FROM walkthroughs ORDER BY updated_at DESC LIMIT ?",
-        )
-        .all(limit) as { data: string }[];
+    /** The most recently updated walkthroughs, optionally of one thread. */
+    list(limit: number, threadId?: string): WalkthroughSummary[] {
+      const rows = (
+        threadId === undefined
+          ? db
+              .prepare(
+                "SELECT data FROM walkthroughs ORDER BY updated_at DESC LIMIT ?",
+              )
+              .all(limit)
+          : db
+              .prepare(
+                "SELECT data FROM walkthroughs WHERE thread_id = ? ORDER BY updated_at DESC LIMIT ?",
+              )
+              .all(threadId, limit)
+      ) as { data: string }[];
       return rows.map((row) => summarize(JSON.parse(row.data) as Walkthrough));
     },
 
