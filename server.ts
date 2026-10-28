@@ -511,12 +511,22 @@ export default async function plugin(bb: BbPluginApi) {
           `No BB project points at ${repo}. Add the repository as a project first.`,
         );
       }
+      // A worktree has to branch off a checkout, so it lives on that checkout's host.
+      const source =
+        project.sources.find((candidate) => candidate.isDefault) ??
+        project.sources[0];
+      if (source === undefined) {
+        throw new Error(
+          `The BB project for ${repo} has no local checkout to review from. Add one to the project first.`,
+        );
+      }
       const { reviewInstructions } = await settings.get();
       const thread = await bb.sdk.threads.spawn({
         projectId: project.id,
         // A fresh worktree, so checking out the PR never disturbs your own checkout.
         environment: {
           type: "host",
+          hostId: source.hostId,
           workspace: {
             type: "managed-worktree",
             baseBranch: { kind: "default" },

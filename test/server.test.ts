@@ -43,9 +43,22 @@ function submitArgs(document: unknown = LOCAL_DOC): string[] {
 /** What sits at every path on the thread's machine, for leak checks. */
 const SECRET_FILE = "ghp_SECRETTOKEN0123456789 and the rest of a credential";
 
-async function setup({ holdAnswers = false }: { holdAnswers?: boolean } = {}) {
+/** The project's checkouts: a second machine listed first, the default after. */
+const SOURCES = [
+  { hostId: "host_laptop", path: "/Users/you/app", isDefault: false },
+  { hostId: "host_1", path: "/home/you/app", isDefault: true },
+];
+
+async function setup({
+  holdAnswers = false,
+  sources = SOURCES,
+}: { holdAnswers?: boolean; sources?: readonly object[] } = {}) {
   const sent: unknown[] = [];
-  const spawned: { permissionMode?: string; prompt?: string }[] = [];
+  const spawned: {
+    environment?: { hostId?: string };
+    permissionMode?: string;
+    prompt?: string;
+  }[] = [];
   const fileReads: string[] = [];
   // The walkthrough thread's event log. Sending a question "runs" a turn
   // that answers it, the way BB records a real one. With `holdAnswers`, the
@@ -124,7 +137,11 @@ async function setup({ holdAnswers = false }: { holdAnswers?: boolean } = {}) {
       projects: {
         list: async () =>
           [
-            { id: "proj_1", gitRemoteUrl: "git@github.com:acme/app.git" },
+            {
+              id: "proj_1",
+              gitRemoteUrl: "git@github.com:acme/app.git",
+              sources,
+            },
           ] as never,
         get: async () =>
           ({
@@ -740,6 +757,17 @@ describe("review threads from the Reviews page", () => {
     // Pinned, so a project that remembers `full` never reviews unsandboxed.
     expect(spawned[0]!.permissionMode).toBe("auto");
     expect(spawned[0]!.prompt).toMatch(/never run it/);
+    // The worktree branches off the project's default checkout, on its machine.
+    expect(spawned[0]!.environment?.hostId).toBe("host_1");
+  });
+
+  it("explain when the project has no checkout to branch from", async () => {
+    const { harness, spawned } = await setup({ sources: [] });
+    dispose = () => harness.lifecycle.dispose();
+    await expect(
+      harness.behavior.callRpc("startReview", { repo: "acme/app", number: 42 }),
+    ).rejects.toThrow(/no local checkout/);
+    expect(spawned).toEqual([]);
   });
 
   it("refuse a repository name that is not owner/name", async () => {
