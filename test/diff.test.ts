@@ -3,6 +3,7 @@ import {
   commentableLines,
   describeRanges,
   findHunkForRange,
+  firstChangedLine,
   parseHunkId,
   parseUnifiedDiff,
   renderFilePatch,
@@ -135,5 +136,29 @@ describe("renderFilePatch", () => {
     expect(reparsed!.hunks.map((h) => h.header)).toEqual([
       deliver!.hunks[1]!.header,
     ]);
+  });
+});
+
+describe("firstChangedLine", () => {
+  const hunk = (newStart: number, lines: string[]) => ({
+    id: "a.ts:h1",
+    header: "",
+    oldStart: newStart,
+    oldLines: 0,
+    newStart,
+    newLines: 0,
+    lines,
+  });
+
+  it("skips leading context to the first change", () => {
+    expect(firstChangedLine(hunk(10, [" a", " b", "+c", " d"]))).toBe(12);
+  });
+
+  it("lands where a deletion was", () => {
+    expect(firstChangedLine(hunk(10, [" a", "-b", " c"]))).toBe(11);
+  });
+
+  it("opens line 1 when the new side starts at 0", () => {
+    expect(firstChangedLine(hunk(0, ["-a", "-b"]))).toBe(1);
   });
 });

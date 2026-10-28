@@ -10,6 +10,7 @@ import {
   WALKTHROUGH_CHANGED,
   type Discussion,
   type DraftComment,
+  type FileLinks,
   type Walkthrough,
 } from "../src/model";
 import type { rpcContract } from "../server";
@@ -103,6 +104,30 @@ export function useWalkthrough(id: string | null) {
     if (readChangePayload(payload)?.id === id) refetch();
   });
   return { rpc, data, setData, error, refetch };
+}
+
+/**
+ * Where a walkthrough's files open. Fetched once: the checkout and branch
+ * outlive every change to the walkthrough. Null until known, and on failure,
+ * when the diff simply shows file names without links.
+ */
+export function useFileLinks(rpc: Rpc, id: string | null): FileLinks | null {
+  const [links, setLinks] = useState<FileLinks | null>(null);
+  useEffect(() => {
+    setLinks(null);
+    if (id === null) return;
+    let current = true;
+    rpc.call("fileLinks", { id }).then(
+      (result) => {
+        if (current) setLinks(result);
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [rpc, id]);
+  return links;
 }
 
 /**

@@ -5,7 +5,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { parseUnifiedDiff, type DiffFile } from "./diff";
 import type { TargetInput } from "./document";
 import { fetchPr, fetchPrDiff, parsePrRef, repoFromRemote } from "./github";
-import type { LocalDiff, Target } from "./model";
+import type { FileLinks, LocalDiff, Target, Walkthrough } from "./model";
 
 /** Diffs above this size are refused rather than rendered slowly. */
 const MAX_PATCH_BYTES = 8 * 1024 * 1024;
@@ -30,6 +30,48 @@ export async function threadContext(
     projectId: thread.projectId ?? null,
     environmentId: thread.environmentId ?? null,
     repo: repoFromRemote(project?.gitRemoteUrl ?? null),
+  };
+}
+
+/**
+ * Where to open a walkthrough's files: the checkout for your editor, and the
+ * ref to browse on GitHub. A pull request browses its head commit. Local
+ * changes browse the checkout's branch, since uncommitted and unpushed work
+ * is not on GitHub; a single commit browses that commit. A checkout or
+ * project that has since been removed only drops its link.
+ */
+export async function fileLinks(
+  bb: BbPluginApi,
+  walkthrough: Walkthrough,
+): Promise<FileLinks> {
+  const { target } = walkthrough;
+  if (target.kind === "pr") {
+    const thread = await bb.sdk.threads
+      .get({ threadId: walkthrough.threadId })
+      .catch(() => null);
+    return {
+      environmentId: thread?.environmentId ?? null,
+      browse: { repo: target.repo, ref: target.headSha },
+    };
+  }
+  const [environment, project] = await Promise.all([
+    bb.sdk.environments
+      .get({ environmentId: target.environmentId })
+      .catch(() => null),
+    walkthrough.projectId === null
+      ? null
+      : bb.sdk.projects
+          .get({ projectId: walkthrough.projectId })
+          .catch(() => null),
+  ]);
+  const repo = repoFromRemote(project?.gitRemoteUrl ?? null);
+  const ref =
+    target.diff.type === "commit"
+      ? target.diff.sha
+      : (environment?.branchName ?? null);
+  return {
+    environmentId: environment === null ? null : target.environmentId,
+    browse: repo !== null && ref !== null ? { repo, ref } : null,
   };
 }
 

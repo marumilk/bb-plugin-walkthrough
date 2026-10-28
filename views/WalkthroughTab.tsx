@@ -22,7 +22,7 @@ import {
 } from "../src/model";
 import { FinishStep } from "./FinishStep";
 import { Hint } from "./Hint";
-import { errorMessage, useWalkthrough } from "./shared";
+import { errorMessage, useFileLinks, useWalkthrough } from "./shared";
 import { OverviewStep } from "./OverviewStep";
 import { StopCard } from "./StopCard";
 import {
@@ -110,6 +110,7 @@ function TargetLine({ walkthrough }: { walkthrough: Walkthrough }) {
 export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
   const id = readId(params);
   const { rpc, data, setData, error } = useWalkthrough(id);
+  const links = useFileLinks(rpc, id);
   const [stepId, setStepId] = useState<string | null>(null);
   const [head, setHead] = useState<HeadStatus | null>(null);
   const [diffStyle, setDiffStyle] = useState<"unified" | "split">("unified");
@@ -417,6 +418,7 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
               <StopDiff
                 key={current.stop.id}
                 files={walkthrough.files}
+                links={links}
                 stopId={current.stop.id}
                 hunkIds={current.stop.hunkIds}
                 notes={current.stop.notes}

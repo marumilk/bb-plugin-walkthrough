@@ -27,6 +27,8 @@ It replaces Codiff for both jobs.
   A note appears when your comments have changed since the summary was written.
 - Check **Viewed** on a file to collapse it; the chevron opens it again.
   The step menu ticks stops whose files are all viewed.
+- Click a file's name to open it in your editor from the thread's checkout, at the stop's first change.
+  The GitHub mark beside it opens the file in your browser: a pull request at its head commit, local changes on their branch, a single commit at that commit.
 - The header button shows how many drafts are still undecided.
 
 ## Settings

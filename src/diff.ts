@@ -277,3 +277,14 @@ export function hunkStats(hunk: DiffHunk): {
   }
   return { additions, deletions };
 }
+
+/** The new-side line of a hunk's first change, where an editor should open. */
+export function firstChangedLine(hunk: DiffHunk): number {
+  let line = hunk.newStart;
+  for (const text of hunk.lines) {
+    if (text[0] === "+" || text[0] === "-") break;
+    if (text[0] === " ") line += 1;
+  }
+  // A hunk that deletes a whole file's start begins at new line 0.
+  return Math.max(1, line);
+}

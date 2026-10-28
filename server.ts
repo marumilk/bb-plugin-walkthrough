@@ -61,6 +61,7 @@ import {
   type Discussion,
   type DiscussionMessage,
   type DraftComment,
+  type FileLinks,
   type LineRange,
   type Walkthrough,
   type WalkthroughSummary,
@@ -73,7 +74,7 @@ import {
   reviewBlockers,
   summaryBasis,
 } from "./src/submission";
-import { snapshotTarget, threadContext } from "./src/targets";
+import { fileLinks, snapshotTarget, threadContext } from "./src/targets";
 
 export interface InboxEntry {
   repo: string;
@@ -97,6 +98,10 @@ export const rpcContract = defineRpcContract({
       comments: z.array(z.custom<DraftComment>()),
       discussions: z.array(z.custom<Discussion>()),
     }),
+  },
+  fileLinks: {
+    input: walkthroughId,
+    output: z.custom<FileLinks>(),
   },
   latestForThread: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
@@ -471,6 +476,8 @@ export default async function plugin(bb: BbPluginApi) {
   // ── RPC (the app) ─────────────────────────────────────────────────────
   bb.rpc.register(rpcContract, {
     get: ({ id }) => ({ ...store.get(id), discussions: store.discussions(id) }),
+
+    fileLinks: ({ id }) => fileLinks(bb, store.get(id).walkthrough),
 
     latestForThread: ({ threadId }) => ({
       summary: store.latestForThread(threadId),

@@ -746,6 +746,20 @@ describe("what an agent can reach through the CLI", () => {
   });
 });
 
+describe("opening files outside the diff", () => {
+  it("opens local changes from the thread's checkout and browses its branch", async () => {
+    const { harness } = await setup();
+    dispose = () => harness.lifecycle.dispose();
+    const id = await submitWalkthrough(harness);
+    await expect(
+      harness.behavior.callRpc("fileLinks", { id }),
+    ).resolves.toEqual({
+      environmentId: "env_1",
+      browse: { repo: "acme/app", ref: "retry" },
+    });
+  });
+});
+
 describe("review threads from the Reviews page", () => {
   it("start sandboxed, with the pull request treated as untrusted", async () => {
     const { harness, spawned } = await setup();

@@ -2,69 +2,93 @@
 // conversations inline under their lines. bb's own diff component has no
 // annotation slot, so this renders through the host-shimmed @pierre/diffs
 // directly and borrows bb's code theme.
-import { Fragment, memo, useMemo, useState } from "react";
+import { Fragment, memo, useMemo, useState } from "react"
 import {
   Markdown,
+  UrlLink,
   experimental_useCodeTheme as useCodeTheme,
-} from "@get-bb/plugin-sdk/app";
+  useBbNavigate,
+} from "@get-bb/plugin-sdk/app"
 import {
   parsePatchFiles,
   type DiffLineAnnotation,
   type FileDiffMetadata,
   type SelectedLineRange,
-} from "@pierre/diffs";
-import { FileDiff } from "@pierre/diffs/react";
-import { toast } from "sonner";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Icon } from "@/components/ui/icon";
+} from "@pierre/diffs"
+import { FileDiff } from "@pierre/diffs/react"
+import { toast } from "sonner"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Icon } from "@/components/ui/icon"
 import {
+  firstChangedLine,
   renderFilePatch,
   type DiffFile,
   type DiffHunk,
   type Side,
-} from "../src/diff";
-import type { Discussion, DraftComment } from "../src/model";
-import { CommentCard, newCommentLabel, NewCommentCard } from "./CommentCard";
-import { DiscussionCard } from "./DiscussionCard";
-import { errorMessage, type Rpc } from "./shared";
+} from "../src/diff"
+import {
+  githubFileUrl,
+  type Discussion,
+  type DraftComment,
+  type FileLinks,
+} from "../src/model"
+import { CommentCard, newCommentLabel, NewCommentCard } from "./CommentCard"
+import { DiscussionCard } from "./DiscussionCard"
+import { Hint } from "./Hint"
+import { errorMessage, type Rpc } from "./shared"
 
 /** An open comment box: on a gutter range, or under a comment to ask about it. */
 interface Composer {
-  path: string;
-  side: Side;
-  start: number;
-  end: number;
+  path: string
+  side: Side
+  start: number
+  end: number
   /** Set when asking about an existing comment; only asking is offered. */
-  commentId: string | null;
+  commentId: string | null
 }
 
 type Annotation =
   | { kind: "comment"; comment: DraftComment }
   | { kind: "discussion"; discussion: Discussion }
-  | { kind: "composer"; composer: Composer };
+  | { kind: "composer"; composer: Composer }
 
 function useDiffTheme() {
-  const { mode } = useCodeTheme();
+  const { mode } = useCodeTheme()
   // bb publishes the active code themes on the root element for renderers
   // like this one; Pierre ships the same theme names.
-  const dark = document.documentElement.dataset.bbCodeThemeDark;
-  const light = document.documentElement.dataset.bbCodeThemeLight;
+  const dark = document.documentElement.dataset.bbCodeThemeDark
+  const light = document.documentElement.dataset.bbCodeThemeLight
   return {
     theme: dark && light ? { dark, light } : undefined,
     themeType: mode,
-  };
+  }
 }
 
 const FIT_TO_PANEL = `pre, [data-code] {
   --diffs-code-grid: var(--diffs-grid-number-column-width) minmax(0, 1fr);
-}`;
+}`
+
+// The header's file name is plain text, and bb's copy of Pierre has no slot
+// after it. So FileName draws a linked name in the prefix slot, the slot's
+// wrapper steps out of the layout, and `order` puts the name back after
+// Pierre's change icon and rename arrow (FILE_NAME_ORDER and up).
+const LINKED_FILE_NAME = `[data-header-content] [data-title] {
+  display: none;
+}
+::slotted([slot="header-prefix"]) {
+  display: contents;
+}
+[data-change-icon] { order: 1; }
+[data-prev-name] { order: 2; }
+[data-rename-icon] { order: 3; }`
+const FILE_NAME_ORDER = 4
 
 function toSide(side: SelectedLineRange["side"]): Side {
-  return side === "deletions" ? "LEFT" : "RIGHT";
+  return side === "deletions" ? "LEFT" : "RIGHT"
 }
 
 function annotationSide(side: Side): "deletions" | "additions" {
-  return side === "LEFT" ? "deletions" : "additions";
+  return side === "LEFT" ? "deletions" : "additions"
 }
 
 /**
@@ -75,16 +99,16 @@ function annotationSide(side: Side): "deletions" | "additions" {
  */
 function sameProps<P extends object>(previous: P, next: P): boolean {
   return (Object.keys(next) as (keyof P)[]).every((key) => {
-    const before = previous[key];
-    const after = next[key];
+    const before = previous[key]
+    const after = next[key]
     if (Array.isArray(before) && Array.isArray(after)) {
       return (
         before.length === after.length &&
         before.every((item, index) => Object.is(item, after[index]))
-      );
+      )
     }
-    return Object.is(before, after);
-  });
+    return Object.is(before, after)
+  })
 }
 
 const FileBlock = memo(function FileBlock({
@@ -103,86 +127,88 @@ const FileBlock = memo(function FileBlock({
   onDiscussionChanged,
   viewed,
   onViewedChange,
+  links,
 }: {
-  file: DiffFile;
-  hunks: DiffHunk[];
-  stopId: string;
-  comments: DraftComment[];
-  discussions: Discussion[];
-  composer: Composer | null;
-  walkthroughId: string;
-  rpc: Rpc;
-  readOnly: boolean;
-  diffStyle: "unified" | "split";
-  onComposer: (composer: Composer | null) => void;
-  onCommentChanged: (id: string, comment: DraftComment | null) => void;
-  onDiscussionChanged: (id: string, discussion: Discussion | null) => void;
-  viewed: boolean;
-  onViewedChange: (stopId: string, path: string, viewed: boolean) => void;
+  file: DiffFile
+  hunks: DiffHunk[]
+  stopId: string
+  comments: DraftComment[]
+  discussions: Discussion[]
+  composer: Composer | null
+  walkthroughId: string
+  rpc: Rpc
+  readOnly: boolean
+  diffStyle: "unified" | "split"
+  onComposer: (composer: Composer | null) => void
+  onCommentChanged: (id: string, comment: DraftComment | null) => void
+  onDiscussionChanged: (id: string, discussion: Discussion | null) => void
+  viewed: boolean
+  onViewedChange: (stopId: string, path: string, viewed: boolean) => void
+  links: FileLinks | null
 }) {
-  const { theme, themeType } = useDiffTheme();
+  const { theme, themeType } = useDiffTheme()
   // Viewed files collapse; the reviewer can open one again without
   // unchecking it. Checking Viewed always collapses.
-  const [reopened, setReopened] = useState(false);
-  const collapsed = viewed && !reopened;
+  const [reopened, setReopened] = useState(false)
+  const collapsed = viewed && !reopened
   const fileDiff = useMemo<FileDiffMetadata | undefined>(
     () => parsePatchFiles(renderFilePatch(file, hunks))[0]?.files[0],
     [file, hunks],
-  );
+  )
 
   // At one line: each comment, then the conversations about it, then any
   // other conversations, then an open composer.
   const annotations = useMemo(() => {
-    const list: DiffLineAnnotation<Annotation>[] = [];
+    const list: DiffLineAnnotation<Annotation>[] = []
     const about = (commentId: string) =>
-      discussions.filter((d) => d.commentId === commentId);
+      discussions.filter((d) => d.commentId === commentId)
     for (const comment of comments) {
-      const side = annotationSide(comment.side);
+      const side = annotationSide(comment.side)
       list.push({
         side,
         lineNumber: comment.line,
         metadata: { kind: "comment", comment },
-      });
+      })
       for (const discussion of about(comment.id)) {
         list.push({
           side,
           lineNumber: comment.line,
           metadata: { kind: "discussion", discussion },
-        });
+        })
       }
       if (composer?.commentId === comment.id) {
         list.push({
           side,
           lineNumber: comment.line,
           metadata: { kind: "composer", composer },
-        });
+        })
       }
     }
-    const shownWithComment = new Set(comments.map((comment) => comment.id));
+    const shownWithComment = new Set(comments.map((comment) => comment.id))
     for (const discussion of discussions) {
-      if (discussion.anchor === null) continue;
+      if (discussion.anchor === null) continue
       if (
         discussion.commentId !== null &&
         shownWithComment.has(discussion.commentId)
       )
-        continue;
+        continue
       list.push({
         side: annotationSide(discussion.anchor.side),
         lineNumber: discussion.anchor.line,
         metadata: { kind: "discussion", discussion },
-      });
+      })
     }
     if (composer !== null && composer.commentId === null) {
       list.push({
         side: annotationSide(composer.side),
         lineNumber: composer.end,
         metadata: { kind: "composer", composer },
-      });
+      })
     }
-    return list;
-  }, [comments, discussions, composer]);
+    return list
+  }, [comments, discussions, composer])
 
-  if (fileDiff === undefined) return null;
+  if (fileDiff === undefined) return null
 
   const addComment = async (draft: Composer, body: string) => {
     try {
@@ -193,14 +219,14 @@ const FileBlock = memo(function FileBlock({
         line: draft.end,
         startLine: draft.start === draft.end ? null : draft.start,
         body,
-      });
-      onCommentChanged(result.comment.id, result.comment);
-      onComposer(null);
+      })
+      onCommentChanged(result.comment.id, result.comment)
+      onComposer(null)
     } catch (cause) {
-      toast.error(errorMessage(cause));
-      throw cause;
+      toast.error(errorMessage(cause))
+      throw cause
     }
-  };
+  }
 
   const ask = async (draft: Composer, body: string) => {
     try {
@@ -217,14 +243,14 @@ const FileBlock = memo(function FileBlock({
             startLine: draft.start === draft.end ? null : draft.start,
           },
         },
-      });
-      onDiscussionChanged(result.discussion.id, result.discussion);
-      onComposer(null);
+      })
+      onDiscussionChanged(result.discussion.id, result.discussion)
+      onComposer(null)
     } catch (cause) {
-      toast.error(errorMessage(cause));
-      throw cause;
+      toast.error(errorMessage(cause))
+      throw cause
     }
-  };
+  }
 
   return (
     <div className="overflow-hidden rounded-lg border border-border">
@@ -238,7 +264,7 @@ const FileBlock = memo(function FileBlock({
           overflow: "wrap",
           // Wrapped code must never grow wider than the panel, even when a
           // comment below a line holds something wide like a code block.
-          unsafeCSS: FIT_TO_PANEL,
+          unsafeCSS: `${FIT_TO_PANEL}\n${LINKED_FILE_NAME}`,
           hunkSeparators: "line-info",
           lineDiffType: "word",
           collapsed,
@@ -251,34 +277,44 @@ const FileBlock = memo(function FileBlock({
               start: Math.min(range.start, range.end),
               end: Math.max(range.start, range.end),
               commentId: null,
-            });
+            })
           },
         }}
-        renderHeaderPrefix={() =>
-          viewed ? (
-            <button
-              type="button"
-              className="mr-1 inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-state-hover hover:text-foreground"
-              aria-label={collapsed ? `Show ${file.path}` : `Hide ${file.path}`}
-              aria-expanded={!collapsed}
-              onClick={() => setReopened((open) => !open)}
-            >
-              <Icon
-                name={collapsed ? "ChevronRight" : "ChevronDown"}
-                className="size-4"
-                aria-hidden="true"
-              />
-            </button>
-          ) : null
-        }
+        renderHeaderPrefix={() => (
+          <>
+            {viewed ? (
+              <button
+                type="button"
+                className="mr-1 inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-state-hover hover:text-foreground"
+                aria-label={
+                  collapsed ? `Show ${file.path}` : `Hide ${file.path}`
+                }
+                aria-expanded={!collapsed}
+                onClick={() => setReopened((open) => !open)}
+              >
+                <Icon
+                  name={collapsed ? "ChevronRight" : "ChevronDown"}
+                  className="size-4"
+                  aria-hidden="true"
+                />
+              </button>
+            ) : null}
+            <FileName
+              path={file.path}
+              // A deleted file has nothing left to open.
+              links={file.status === "deleted" ? null : links}
+              line={hunks[0] ? firstChangedLine(hunks[0]) : null}
+            />
+          </>
+        )}
         renderHeaderMetadata={() => (
           <label className="ml-2 inline-flex h-6 cursor-pointer select-none items-center gap-1.5 rounded-md border border-border px-2 font-sans text-xs leading-none text-muted-foreground hover:bg-state-hover hover:text-foreground">
             <Checkbox
               className="size-3 rounded-[3px] [&_[data-icon-root]]:size-2.5"
               checked={viewed}
               onCheckedChange={(checked) => {
-                setReopened(false);
-                onViewedChange(stopId, file.path, checked === true);
+                setReopened(false)
+                onViewedChange(stopId, file.path, checked === true)
               }}
               aria-label={`Mark ${file.path} viewed`}
             />
@@ -294,11 +330,11 @@ const FileBlock = memo(function FileBlock({
         )}
       />
     </div>
-  );
+  )
 
   function renderCard(data: Annotation) {
     if (data.kind === "composer") {
-      const draft = data.composer;
+      const draft = data.composer
       return (
         <NewCommentCard
           label={newCommentLabel(draft.start, draft.end)}
@@ -307,7 +343,7 @@ const FileBlock = memo(function FileBlock({
           onComment={(body) => addComment(draft, body)}
           onAsk={(body) => ask(draft, body)}
         />
-      );
+      )
     }
     if (data.kind === "discussion") {
       return (
@@ -317,9 +353,9 @@ const FileBlock = memo(function FileBlock({
           rpc={rpc}
           onChanged={(next) => onDiscussionChanged(data.discussion.id, next)}
         />
-      );
+      )
     }
-    const comment = data.comment;
+    const comment = data.comment
     return (
       <CommentCard
         comment={comment}
@@ -337,9 +373,9 @@ const FileBlock = memo(function FileBlock({
           })
         }
       />
-    );
+    )
   }
-}, sameProps);
+}, sameProps)
 
 export function StopDiff({
   viewedPaths,
@@ -356,48 +392,51 @@ export function StopDiff({
   diffStyle,
   onCommentChanged,
   onDiscussionChanged,
+  links,
 }: {
-  files: readonly DiffFile[];
-  stopId: string;
-  hunkIds: readonly string[];
+  files: readonly DiffFile[]
+  stopId: string
+  hunkIds: readonly string[]
   /** The agent's asides, shown as quotes above the file they are about. */
-  notes: readonly { hunkId: string; body: string }[];
-  comments: readonly DraftComment[];
-  discussions: readonly Discussion[];
-  walkthroughId: string;
-  rpc: Rpc;
-  readOnly: boolean;
-  diffStyle: "unified" | "split";
-  onCommentChanged: (id: string, comment: DraftComment | null) => void;
-  onDiscussionChanged: (id: string, discussion: Discussion | null) => void;
+  notes: readonly { hunkId: string; body: string }[]
+  comments: readonly DraftComment[]
+  discussions: readonly Discussion[]
+  walkthroughId: string
+  rpc: Rpc
+  readOnly: boolean
+  diffStyle: "unified" | "split"
+  onCommentChanged: (id: string, comment: DraftComment | null) => void
+  onDiscussionChanged: (id: string, discussion: Discussion | null) => void
   /** Paths marked Viewed in this stop. */
-  viewedPaths: ReadonlySet<string>;
-  onViewedChange: (stopId: string, path: string, viewed: boolean) => void;
+  viewedPaths: ReadonlySet<string>
+  onViewedChange: (stopId: string, path: string, viewed: boolean) => void
+  /** Where files open outside the diff; null shows plain names. */
+  links: FileLinks | null
 }) {
-  const [composer, setComposer] = useState<Composer | null>(null);
+  const [composer, setComposer] = useState<Composer | null>(null)
 
   // Group the stop's hunks by file, keeping the order the agent chose for
   // files and the patch order within each file.
   const groups = useMemo(() => {
-    const wanted = new Set(hunkIds);
-    const order: string[] = [];
+    const wanted = new Set(hunkIds)
+    const order: string[] = []
     for (const id of hunkIds) {
       const path = files.find((file) =>
         file.hunks.some((hunk) => hunk.id === id),
-      )?.path;
-      if (path !== undefined && !order.includes(path)) order.push(path);
+      )?.path
+      if (path !== undefined && !order.includes(path)) order.push(path)
     }
     return order.map((path) => {
-      const file = files.find((candidate) => candidate.path === path)!;
-      return { file, hunks: file.hunks.filter((hunk) => wanted.has(hunk.id)) };
-    });
-  }, [files, hunkIds]);
+      const file = files.find((candidate) => candidate.path === path)!
+      return { file, hunks: file.hunks.filter((hunk) => wanted.has(hunk.id)) }
+    })
+  }, [files, hunkIds])
 
   return (
     <div className="space-y-4">
       {groups.map(({ file, hunks }) => {
-        const ids = new Set(hunks.map((hunk) => hunk.id));
-        const fileNotes = notes.filter((note) => ids.has(note.hunkId));
+        const ids = new Set(hunks.map((hunk) => hunk.id))
+        const fileNotes = notes.filter((note) => ids.has(note.hunkId))
         return (
           <Fragment key={file.path}>
             {fileNotes.map((note, index) => (
@@ -427,12 +466,78 @@ export function StopDiff({
               onDiscussionChanged={onDiscussionChanged}
               viewed={viewedPaths.has(file.path)}
               onViewedChange={onViewedChange}
+              links={links}
             />
           </Fragment>
-        );
+        )
       })}
     </div>
-  );
+  )
+}
+
+/**
+ * The file's path, which opens the file in your editor, and a GitHub mark
+ * that opens it in the browser. Both land on the stop's first change.
+ */
+function FileName({
+  path,
+  links,
+  line,
+}: {
+  path: string
+  links: FileLinks | null
+  line: number | null
+}) {
+  const navigate = useBbNavigate()
+  // Paths truncate from the left, keeping the file name in view.
+  const name = <bdi>{path}</bdi>
+  const environmentId = links?.environmentId ?? null
+  const browse = links?.browse ?? null
+
+  const openInEditor = (environmentId: string) => {
+    const opened = navigate.experimental_openFileExternally({
+      target: { kind: "workspace", environmentId, path },
+      location: line === null ? null : { kind: "line", line, column: null },
+    })
+    if (!opened) toast.error(`Could not open ${path} in your editor.`)
+  }
+
+  // Each part is its own item in Pierre's header row; see LINKED_FILE_NAME.
+  return (
+    <>
+      {environmentId === null ? (
+        <span
+          className="min-w-0 truncate [direction:rtl]"
+          style={{ order: FILE_NAME_ORDER }}
+        >
+          {name}
+        </span>
+      ) : (
+        <Hint label="Open in your editor">
+          <button
+            type="button"
+            className="min-w-0 cursor-pointer truncate rounded-sm underline-offset-2 [direction:rtl] hover:underline focus-visible:underline focus-visible:outline-none"
+            style={{ order: FILE_NAME_ORDER }}
+            onClick={() => openInEditor(environmentId)}
+          >
+            {name}
+          </button>
+        </Hint>
+      )}
+      {browse !== null ? (
+        <Hint label="Open on GitHub">
+          <UrlLink
+            href={githubFileUrl(browse, path, line)}
+            aria-label={`Open ${path} on GitHub`}
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-state-hover hover:text-foreground"
+            style={{ order: FILE_NAME_ORDER + 1 }}
+          >
+            <Icon name="Github" className="size-3.5" aria-hidden="true" />
+          </UrlLink>
+        </Hint>
+      ) : null}
+    </>
+  )
 }
 
 /** An aside from the agent between files, set off like a block quote. */
@@ -444,5 +549,5 @@ function NoteQuote({ body }: { body: string }) {
         className="min-w-0 text-sm leading-6 text-foreground"
       />
     </aside>
-  );
+  )
 }

@@ -187,3 +187,24 @@ export interface Discussion {
   createdAt: number;
   updatedAt: number;
 }
+
+/** Where a walkthrough's files live, for opening them outside the diff. */
+export interface FileLinks {
+  /** The checkout to open files from in your editor; null when there is none. */
+  environmentId: string | null;
+  /** The GitHub repository and the branch or commit to browse it at. */
+  browse: { repo: string; ref: string } | null;
+}
+
+/** A file on GitHub at `ref`, scrolled to `line`. */
+export function githubFileUrl(
+  browse: { repo: string; ref: string },
+  path: string,
+  line: number | null,
+): string {
+  // Branch names and paths keep their slashes; anything else is escaped.
+  const escape = (value: string) =>
+    value.split("/").map(encodeURIComponent).join("/");
+  const anchor = line === null ? "" : `#L${line}`;
+  return `https://github.com/${browse.repo}/blob/${escape(browse.ref)}/${escape(path)}${anchor}`;
+}
