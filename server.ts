@@ -62,6 +62,7 @@ import {
   type DiscussionMessage,
   type DraftComment,
   type FileLinks,
+  type FileVersions,
   type LineRange,
   type Walkthrough,
   type WalkthroughSummary,
@@ -75,6 +76,7 @@ import {
   summaryBasis,
 } from "./src/submission";
 import { fileLinks, snapshotTarget, threadContext } from "./src/targets";
+import { fileVersions, mergeBaseCache } from "./src/versions";
 
 export interface InboxEntry {
   repo: string;
@@ -102,6 +104,12 @@ export const rpcContract = defineRpcContract({
   fileLinks: {
     input: walkthroughId,
     output: z.custom<FileLinks>(),
+  },
+  fileVersions: {
+    input: z
+      .object({ id: z.string().min(1), path: z.string().min(1) })
+      .strict(),
+    output: z.object({ versions: z.custom<FileVersions>().nullable() }),
   },
   latestForThread: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
@@ -290,6 +298,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   const store = createStore(bb);
+  const mergeBase = mergeBaseCache();
 
   const changed = (walkthrough: Pick<Walkthrough, "id" | "threadId">) => {
     bb.realtime.publish(WALKTHROUGH_CHANGED, {
@@ -478,6 +487,24 @@ export default async function plugin(bb: BbPluginApi) {
     get: ({ id }) => ({ ...store.get(id), discussions: store.discussions(id) }),
 
     fileLinks: ({ id }) => fileLinks(bb, store.get(id).walkthrough),
+
+    // Expanding is a convenience: any failure leaves the diff as it was.
+    fileVersions: async ({ id, path }) => {
+      const { walkthrough } = store.get(id);
+      try {
+        return {
+          versions: await fileVersions(
+            bb,
+            walkthrough,
+            path,
+            mergeBase(walkthrough),
+          ),
+        };
+      } catch (error) {
+        bb.log.warn(`Reading both versions of ${path}: ${String(error)}`);
+        return { versions: null };
+      }
+    },
 
     latestForThread: ({ threadId }) => ({
       summary: store.latestForThread(threadId),

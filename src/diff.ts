@@ -288,3 +288,35 @@ export function firstChangedLine(hunk: DiffHunk): number {
   // A hunk that deletes a whole file's start begins at new line 0.
   return Math.max(1, line);
 }
+
+/**
+ * True when every hunk's lines sit where its header says in the two
+ * versions, so the versions are the ones the hunks were cut from.
+ */
+export function hunksMatch(
+  hunks: readonly DiffHunk[],
+  oldText: string,
+  newText: string,
+): boolean {
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  return hunks.every((hunk) => {
+    // A hunk with no lines on a side starts after line `start`, not at it.
+    let oldAt = hunk.oldLines === 0 ? hunk.oldStart : hunk.oldStart - 1;
+    let newAt = hunk.newLines === 0 ? hunk.newStart : hunk.newStart - 1;
+    for (const line of hunk.lines) {
+      const marker = line[0];
+      const text = line.slice(1);
+      if (marker === "\\") continue;
+      if (marker !== "+" && oldLines[oldAt++] !== text) return false;
+      if (marker !== "-" && newLines[newAt++] !== text) return false;
+    }
+    return true;
+  });
+}
+
+function splitLines(text: string): string[] {
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}

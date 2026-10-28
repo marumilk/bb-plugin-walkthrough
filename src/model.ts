@@ -208,3 +208,9 @@ export function githubFileUrl(
   const anchor = line === null ? "" : `#L${line}`;
   return `https://github.com/${browse.repo}/blob/${escape(browse.ref)}/${escape(path)}${anchor}`;
 }
+
+/** Both versions of a changed file, for expanding its unchanged lines. */
+export interface FileVersions {
+  old: string;
+  new: string;
+}

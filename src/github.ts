@@ -167,6 +167,57 @@ export function fetchPrDiff(ref: PrRef, signal?: AbortSignal): Promise<string> {
   );
 }
 
+/**
+ * Where a pull request's diff starts: the merge base of its base branch and
+ * `headSha`, the commit GitHub's own PR diff compares against.
+ */
+export async function fetchMergeBase(
+  ref: PrRef,
+  headSha: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const baseSha = await runGh(
+    ["api", `repos/${ref.repo}/pulls/${ref.number}`, "--jq", ".base.sha"],
+    { signal },
+  );
+  const mergeBase = await runGh(
+    [
+      "api",
+      `repos/${ref.repo}/compare/${checkSha(baseSha.trim())}...${checkSha(headSha)}`,
+      "--jq",
+      ".merge_base_commit.sha",
+    ],
+    { signal },
+  );
+  return checkSha(mergeBase.trim());
+}
+
+/** A file's text at a commit. */
+export function fetchFileAt(
+  repo: string,
+  path: string,
+  sha: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const escaped = path.split("/").map(encodeURIComponent).join("/");
+  return runGh(
+    [
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw+json",
+      `repos/${repo}/contents/${escaped}?ref=${checkSha(sha)}`,
+    ],
+    { signal },
+  );
+}
+
+// Commit ids go into `gh api` paths, so only hex gets through.
+function checkSha(sha: string): string {
+  if (!/^[0-9a-f]{7,64}$/i.test(sha))
+    throw new Error(`"${sha}" is not a commit id.`);
+  return sha;
+}
+
 export interface ReviewRequest {
   repo: string;
   number: number;

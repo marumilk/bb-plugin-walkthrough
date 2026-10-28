@@ -19,7 +19,7 @@ It replaces Codiff for both jobs.
 - In the tab, use Next and Back (or `j` and `k`) to move between stops, and the step menu to jump.
   Each stop opens with a card labelled **Review** or **Critical**; the agent can add short notes between files.
 - Hover a diff line and click **+**, then **Add comment** for a review comment or **Ask agent** for a private question.
-  Drag across line numbers for a range.
+  Drag the **+** across lines for a range, or drag across line numbers and then click **+**.
   **Ask agent** also sits on every draft and on each stop card.
   The question goes to the walkthrough's thread and the answer appears inline; these conversations are never posted.
 - For pull requests, the first step shows the PR description as the author wrote it.
@@ -29,6 +29,10 @@ It replaces Codiff for both jobs.
   The step menu ticks stops whose files are all viewed.
 - Click a file's name to open it in your editor from the thread's checkout, at the stop's first change.
   The GitHub mark beside it opens the file in your browser: a pull request at its head commit, local changes on their branch, a single commit at that commit.
+- Click the arrows on an "unmodified lines" bar to expand the lines around a change.
+  The **↑↓** button in a file's header shows the whole file, with every change in it, including other stops'.
+  When a stop shows only some of a file's changes, the bars stay closed and the whole-file button is the way to see more, since expanding would show the hidden changes as unchanged lines.
+  Comments and questions stay on the diff's own lines.
 - The header button shows how many drafts are still undecided.
 
 ## Settings

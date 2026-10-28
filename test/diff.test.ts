@@ -4,6 +4,7 @@ import {
   describeRanges,
   findHunkForRange,
   firstChangedLine,
+  hunksMatch,
   parseHunkId,
   parseUnifiedDiff,
   renderFilePatch,
@@ -160,5 +161,35 @@ describe("firstChangedLine", () => {
 
   it("opens line 1 when the new side starts at 0", () => {
     expect(firstChangedLine(hunk(0, ["-a", "-b"]))).toBe(1);
+  });
+});
+
+describe("hunksMatch", () => {
+  const [file] = parseUnifiedDiff(
+    [
+      "diff --git a/a.ts b/a.ts",
+      "--- a/a.ts",
+      "+++ b/a.ts",
+      "@@ -2,3 +2,3 @@",
+      " b",
+      "-c",
+      "+C",
+      " d",
+      "@@ -6,0 +7,1 @@",
+      "+g",
+      "",
+    ].join("\n"),
+  );
+  const old = "a\nb\nc\nd\ne\nf\n";
+  const next = "a\nb\nC\nd\ne\nf\ng\n";
+
+  it("accepts the versions the hunks were cut from", () => {
+    expect(hunksMatch(file!.hunks, old, next)).toBe(true);
+  });
+
+  it("rejects versions that moved on since", () => {
+    expect(hunksMatch(file!.hunks, old, "a\nb\nC2\nd\ne\nf\ng\n")).toBe(false);
+    // An extra line above shifts every hunk.
+    expect(hunksMatch(file!.hunks, `x\n${old}`, `x\n${next}`)).toBe(false);
   });
 });

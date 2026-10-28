@@ -422,8 +422,8 @@ export function WalkthroughTab({ params }: ExperimentalThreadActionTabProps) {
                 stopId={current.stop.id}
                 hunkIds={current.stop.hunkIds}
                 notes={current.stop.notes}
-                comments={stopComments}
-                discussions={stopDiscussions.filter((d) => d.anchor !== null)}
+                comments={comments}
+                discussions={discussions.filter((d) => d.anchor !== null)}
                 walkthroughId={walkthrough.id}
                 rpc={rpc}
                 readOnly={readOnly}

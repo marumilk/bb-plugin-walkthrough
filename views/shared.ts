@@ -11,6 +11,7 @@ import {
   type Discussion,
   type DraftComment,
   type FileLinks,
+  type FileVersions,
   type Walkthrough,
 } from "../src/model";
 import type { rpcContract } from "../server";
@@ -128,6 +129,46 @@ export function useFileLinks(rpc: Rpc, id: string | null): FileLinks | null {
     };
   }, [rpc, id]);
   return links;
+}
+
+// Versions are read once per page: a walkthrough's snapshot never changes,
+// and stops revisit the same files.
+const versionsCache = new Map<string, Promise<FileVersions | null>>();
+
+/**
+ * Both versions of a file, for expanding its unchanged lines. Null while
+ * loading, and for good when the file has none to expand.
+ */
+export function useFileVersions(
+  rpc: Rpc,
+  id: string,
+  path: string,
+): FileVersions | null {
+  const [versions, setVersions] = useState<FileVersions | null>(null);
+  useEffect(() => {
+    setVersions(null);
+    const key = `${id}\u0000${path}`;
+    let request = versionsCache.get(key);
+    if (request === undefined) {
+      request = rpc.call("fileVersions", { id, path }).then(
+        (result) => result.versions,
+        () => {
+          // Try again next time rather than remember a failure.
+          versionsCache.delete(key);
+          return null;
+        },
+      );
+      versionsCache.set(key, request);
+    }
+    let current = true;
+    void request.then((result) => {
+      if (current) setVersions(result);
+    });
+    return () => {
+      current = false;
+    };
+  }, [rpc, id, path]);
+  return versions;
 }
 
 /**
