@@ -12,7 +12,7 @@ import { errorMessage, type Rpc } from "./shared";
 
 /** Markdown with chat-like density: short line height and small block gaps. */
 const COMPACT_PROSE =
-  "min-w-0 text-sm leading-5 text-foreground [&_p]:mb-1.5 [&_ul]:mb-1.5 [&_ul]:pl-4 [&_ol]:mb-1.5 [&_ol]:pl-4 [&_li]:mb-0.5 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&>*:last-child]:mb-0";
+  "min-w-0 overflow-x-clip text-sm leading-5 text-foreground [&_p]:mb-1.5 [&_ul]:mb-1.5 [&_ul]:pl-4 [&_ol]:mb-1.5 [&_ol]:pl-4 [&_li]:mb-0.5 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&>*:last-child]:mb-0";
 
 export function DiscussionCard({
   discussion,

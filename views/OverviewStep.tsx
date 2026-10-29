@@ -59,7 +59,7 @@ export function OverviewStep({
           ) : (
             <Markdown
               content={body}
-              className="min-w-0 text-sm leading-6 [&_img]:max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto"
+              className="min-w-0 overflow-x-clip text-sm leading-6 [&_img]:max-w-full [&_pre]:max-w-full [&_pre]:overflow-x-auto"
             />
           )}
         </div>
@@ -69,7 +69,10 @@ export function OverviewStep({
           <p className="text-xs font-medium text-muted-foreground">
             What to focus on
           </p>
-          <Markdown content={focus} className="mt-1 text-sm leading-6" />
+          <Markdown
+            content={focus}
+            className="mt-1 min-w-0 overflow-x-clip text-sm leading-6"
+          />
         </section>
       ) : null}
     </div>

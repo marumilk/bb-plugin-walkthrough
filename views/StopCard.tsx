@@ -85,7 +85,10 @@ export function StopCard({
         <PriorityBadge priority={stop.priority} className="mt-0.5" />
       </div>
       {stop.prose ? (
-        <Markdown content={stop.prose} className="mt-2 text-sm leading-6" />
+        <Markdown
+          content={stop.prose}
+          className="mt-2 min-w-0 overflow-x-clip text-sm leading-6"
+        />
       ) : null}
 
       {discussions.length > 0 ? (

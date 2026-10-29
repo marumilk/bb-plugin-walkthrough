@@ -632,7 +632,7 @@ function NoteQuote({ body }: { body: string }) {
     <aside className="rounded-r-lg border-l-[3px] border-foreground/40 bg-secondary/40 px-4 py-2.5">
       <Markdown
         content={body}
-        className="min-w-0 text-sm leading-6 text-foreground"
+        className="min-w-0 overflow-x-clip text-sm leading-6 text-foreground"
       />
     </aside>
   );

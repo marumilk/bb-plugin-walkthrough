@@ -49,6 +49,8 @@ Anchor every stop and comment to these exact ids and line numbers.
 
 Write it to a temporary file outside the repository, for example `$TMPDIR/walkthrough-<id>.json`.
 Use a file-writing tool or a quoted heredoc (`<<'EOF'`).
+Write the whole document on one line: `bb` reads `--document-stdin` as a single line and rejects a document that spans several.
+The example below is spread over several lines only for reading; Markdown line breaks inside strings stay as `\n`.
 
 ```json
 {
@@ -130,7 +132,7 @@ Use a file-writing tool or a quoted heredoc (`<<'EOF'`).
 bb walkthrough submit --document-stdin < "$TMPDIR/walkthrough-<id>.json"
 ```
 
-Pass the document on stdin as shown; the command takes no file path.
+Pass the one-line document on stdin as shown; the command takes no file path.
 The command checks every hunk id and comment anchor against a fresh snapshot of the diff.
 If it fails, fix the listed problems and run it again; nothing opens until it passes.
 On success it opens the tab beside this thread and prints a line like `::walkthrough{id="wt_…"}`.

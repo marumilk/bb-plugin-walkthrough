@@ -332,7 +332,7 @@ export function CommentCard({
       ) : (
         <Markdown
           content={comment.body}
-          className="min-w-0 text-sm leading-6 text-foreground [&_pre]:max-w-full [&_pre]:overflow-x-auto"
+          className="min-w-0 overflow-x-clip text-sm leading-6 text-foreground [&_pre]:max-w-full [&_pre]:overflow-x-auto"
         />
       )}
 
