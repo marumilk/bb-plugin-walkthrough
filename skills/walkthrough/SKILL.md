@@ -22,6 +22,11 @@ Never run `gh pr review`, `gh pr comment`, or `gh api …/reviews`, and never ap
   Use `{"local": "branch"}` for the branch's commits against its base, or `{"local": "all"}` for both.
 - One commit: `{"commit": "<sha>"}`.
 
+If the user names no target, run `bb status`.
+If it shows a pull request for this checkout's branch and you did not write that branch's changes in this thread, review that PR: `{"pr": "<url>"}`.
+A branch someone else opened a PR for is their review request, so it must get the PR's description page and publish as a GitHub review, not come back to you as change requests.
+Otherwise, walk through the changes in this checkout with `{"local": …}`.
+
 ## 2. Review the change
 
 For a pull request, read the diff (`gh pr diff <n>`) and the surrounding code.
